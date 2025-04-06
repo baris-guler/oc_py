@@ -1222,13 +1222,20 @@ class fit:
         self.outsuffix = None
 
     def model_params(self, model=None):
+        dic = {}
         if model is None:
             if hasattr(self, "fitted_model"):
                 model = self.fitted_model
             else:
                 model = self.model
         for mc in model.model_components:
+            for param in mc.params:
+                #TODO aşağıdakini uncomment et 2 alttakini sil
+                #dic[mc.name + " " +param] = mc.params[param]
+                dic[param] = mc.params[param]
+        for mc in model.model_components:
             print(mc.params)
+        return dic
 
     def save_fit(self, filename):
         """
@@ -1239,6 +1246,20 @@ class fit:
         """
         with open(filename, 'wb') as f:
             pickle.dump(self, f)
+    
+    @staticmethod
+    def load_fit(filename):
+        """
+        Loads a fit instance from a file using pickle.
+
+        Parameters:
+            filename (str): The file path from which the fit instance will be loaded.
+
+        Returns:
+            fit: The loaded fit instance.
+        """
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
         
     def fit_model(self, method='leastsq', iter_cb=None, scale_covar=True, verbose=False, 
                 fit_kws=None, nan_policy=None, calc_covar=True, max_nfev=None, 
@@ -1538,6 +1559,7 @@ class fit:
         if save_plots:
             fig.savefig(self.data.object_name + "_corner_" + str(outsuffix) + ".png")
         plt.close()
+        return fig
 
     def clear_emcee_sample(self, samples, threshold=0, order=0, clear_count=np.inf, inplace=False):
         """
@@ -1720,18 +1742,18 @@ class fit:
                 T_LiTE = component.T_LiTE.value * Ref_period + Ref_mintime
 
                 # Populate the dictionary with orbital parameters.
-                dict_op[f"a12_sin_{component.name}"] = sma12sini1
-                dict_op[f"a12_{component.name}"] = sma121
-                dict_op[f"m_sini_msol_{component.name}"] = mass31sini
-                dict_op[f"m_sini_mjup_{component.name}"] = mass31sini * 1047.56
-                dict_op[f"m_msol_{component.name}"] = mass31
-                dict_op[f"m_jup_{component.name}"] = mass31_mjup
-                dict_op[f"a_AU_{component.name}"] = sma31
-                dict_op[f"p_day_{component.name}"] = p_day
-                dict_op[f"p_year_{component.name}"] = p_year
-                dict_op[f"ecc_{component.name}"] = ufloat(component.e.value, component.e.std)
-                dict_op[f"omega_{component.name}"] = ufloat(component.omega.value, component.omega.std)
-                dict_op[f"T_LiTE_{component.name}"] = T_LiTE
+                dict_op[f"a12_sini{component.name}"] = sma12sini1
+                dict_op[f"a12{component.name}"] = sma121
+                dict_op[f"m_sini_msol{component.name}"] = mass31sini
+                dict_op[f"m_sini_mjup{component.name}"] = mass31sini * 1047.56
+                dict_op[f"m_msol{component.name}"] = mass31
+                dict_op[f"m_jup{component.name}"] = mass31_mjup
+                dict_op[f"a_AU{component.name}"] = sma31
+                dict_op[f"p_day{component.name}"] = p_day
+                dict_op[f"p_year{component.name}"] = p_year
+                dict_op[f"ecc{component.name}"] = ufloat(component.e.value, component.e.std)
+                dict_op[f"omega{component.name}"] = ufloat(component.omega.value, component.omega.std)
+                dict_op[f"T_LiTE{component.name}"] = T_LiTE
 
         return dict_op
 
@@ -2305,6 +2327,7 @@ class fit:
             return fit2.total_oc_delay(args, fit2.data.m1, fit2.data.m2, fit2.data.inc, Ecorr, Mintimes)
         
         model_err_p, model_err_m = fit2.error_propagate(function, midpar, pluspar, minuspar)
+        print(model_err_p)
         
         return model_err_p, model_err_m
 
@@ -2608,7 +2631,7 @@ class LiTE(model_component):
             parameter["T_LiTE"] = T_LiTE
             parameter["amp"] = amp
         
-        print("e=", parameter["e"])
+        # print("e=", parameter["e"])
         # print("omega=", parameter["omega"])
         # print("P_LiTE=", parameter["P_LiTE"])
         # print("T_LiTE=", parameter["T_LiTE"])
@@ -2622,7 +2645,7 @@ class LiTE(model_component):
     
 class LiTE_abspar(model_component):
     def __init__(self, params = {}, name="LiTE_abspar"):
-        self._main_units = {"mass": "GM_sun", "P_LiTE":"epoch", "ecc": "Unitless", "omega":"deg", "T_LiTE":"epoch", "inc":"deg"}
+        self._main_units = {"mass": "GM_sun", "P_LiTE":"day", "ecc": "Unitless", "omega":"deg", "T_LiTE":"BJD", "inc":"deg"}
         self.params = {"mass":0, "P_LiTE":0, "ecc":0, "omega":0, "T_LiTE":0, "inc":90} if params == {} else params
         self.name = name
         self.Ref_period = None
@@ -2837,7 +2860,7 @@ def sample_plot_nonclass(model=None,
                          extend_graph_factor=0.05,
                          graph_size=(14, 8),
                          label_size=16,
-                         # New tick size parameters:
+                         # Tick size parameters:
                          tick_size=12,
                          tick_size_x_bottom=None,
                          tick_size_x_top=None,
@@ -2849,14 +2872,24 @@ def sample_plot_nonclass(model=None,
                          y_lim=None,
                          y_lim_right=None,
                          legend_position="best",
+                         draw_legend=True, 
                          bjd_offset=2450000.0,
                          res_plot=False,
                          res_height_ratios=(4, 1), 
                          res_hspace=0.4):
     """
-    Plots an O-C (Observed minus Calculated) diagram with error bars, a median fit, and optionally a residuals subplot.
+    Plots an O-C (Observed minus Calculated) diagram with error bars, a median fit,
+    and optionally a residuals subplot.
 
-    [Docstring truncated for brevity...]
+    This version sets the top x-axis ticks so that:
+      - The first tick is at January 1 of the year: floor(minimum_year) + 1.
+      - The last tick is initially set to ceil(maximum_year).
+      - We then check if (last_tick - first_tick) is divisible by 8; if not, try 7 then 6.
+      - If none of these divisors work, we decrement last_tick until one works.
+      - Tick labels are drawn at January 1 of the chosen years.
+      
+    (Depending on which divisor works, you may see 9, 8, or 7 tick labels.)
+    The main x-axis limits remain tied to the data (or to x_lim) so that the graph width is not extended.
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -2864,7 +2897,7 @@ def sample_plot_nonclass(model=None,
     import copy
     from matplotlib.ticker import FormatStrFormatter, MaxNLocator, FixedLocator, FixedFormatter
 
-    # Set dedicated tick sizes using the default tick_size if not provided.
+    # Set tick sizes (use tick_size if not provided)
     tick_size_x_bottom = tick_size_x_bottom or tick_size
     tick_size_x_top    = tick_size_x_top or tick_size
     tick_size_y_left   = tick_size_y_left or tick_size
@@ -2889,16 +2922,18 @@ def sample_plot_nonclass(model=None,
             return "%.0f"
 
     def approximate_year_from_bjd(bjd):
+        # Year 2000 corresponds to BJD 2451545.0
         return 2000.0 + (bjd - 2451545.0) / 365.25
 
     def approximate_bjd_from_year(year):
+        # Returns BJD corresponding to January 1 of the given year (approximate)
         return 2451545.0 + (year - 2000.0) * 365.25
 
     def _apply_bottom_xaxis(ax, x_axis_type):
         ax.tick_params(axis='x', labelsize=tick_size_x_bottom)
         if x_axis_type.lower() == "bjd":
             ref_mintime = getattr(data, "Ref_mintime", 0)
-            ref_period = getattr(data, "Ref_period", 1)
+            ref_period  = getattr(data, "Ref_period", 1)
             bottom_ticks = ax.get_xticks()
             actual_bjd = [ref_mintime + (tick * ref_period) for tick in bottom_ticks]
             differences = [b - bjd_offset for b in actual_bjd]
@@ -2912,6 +2947,7 @@ def sample_plot_nonclass(model=None,
         else:
             ax.set_xlabel(x_axis_type, fontsize=label_size)
 
+    # Unit conversion factors
     conv_factors = {"day": 1, "hour": 24, "minute": 1440, "second": 86400, "millisecond": 86400000}
     factor_left = conv_factors[y_axis_left.lower()]
     factor_right = conv_factors[y_axis_right.lower()] if y_axis_right else None
@@ -2948,14 +2984,14 @@ def sample_plot_nonclass(model=None,
     else:
         oc_right = None
 
+    # Create figure (with or without residuals subplot)
     if res_plot:
-        # Create two subplots that share the x-axis.
         fig, (ax_main, ax_res) = plt.subplots(
             2, 1, sharex=True,
             gridspec_kw={'height_ratios': res_height_ratios, 'hspace': res_hspace},
             figsize=graph_size
         )
-        ax_left = ax_main  # Use the top subplot as the main (top) graph.
+        ax_left = ax_main
     else:
         fig, ax_left = plt.subplots(figsize=graph_size)
 
@@ -2964,7 +3000,7 @@ def sample_plot_nonclass(model=None,
     groups_list = list(df_reset.groupby("Data_group"))
     num_groups = len(groups_list)
     
-    # Process group_colors
+    # Process group colors
     if group_colors is None:
         cmap = plt.get_cmap(color_palette, num_groups)
         group_color_list = [cmap(i) for i in range(num_groups)]
@@ -2980,7 +3016,7 @@ def sample_plot_nonclass(model=None,
             if group_color_list[i] is None:
                 group_color_list[i] = cmap(i)
     
-    # Process group_shapes
+    # Process group shapes
     if group_shapes is None:
         group_shapes_list = ["."] * num_groups
     else:
@@ -2992,7 +3028,7 @@ def sample_plot_nonclass(model=None,
             group_shapes_list += [None] * (num_groups - len(group_shapes_list))
         group_shapes_list = [m if m is not None else "." for m in group_shapes_list]
     
-    # Process group_sizes
+    # Process group sizes
     if group_sizes is None:
         group_sizes_list = [5] * num_groups
     else:
@@ -3004,7 +3040,6 @@ def sample_plot_nonclass(model=None,
             group_sizes_list += [None] * (num_groups - len(group_sizes_list))
         group_sizes_list = [s if s is not None else 5 for s in group_sizes_list]
     
-    # Create dictionaries for easy access
     group_color_dict = {}
     group_shape_dict = {}
     group_size_dict = {}
@@ -3012,7 +3047,6 @@ def sample_plot_nonclass(model=None,
         group_color_dict[name] = group_color_list[i]
         group_shape_dict[name] = group_shapes_list[i]
         group_size_dict[name] = group_sizes_list[i]
-        # For circular markers ("o"), set markerfacecolor to 'none' for a hollow effect
         markerfacecolor = 'none' if group_shapes_list[i] == "o" else group_color_list[i]
         ax_left.errorbar(
             grp["Ecorr"],
@@ -3028,7 +3062,7 @@ def sample_plot_nonclass(model=None,
             label=name
         )
         
-    # Perform the fit and calculate the best-fit curve
+    # Perform the fit and compute the best-fit curve
     fit2 = fit(model, data)
     fit2 = copy.deepcopy(fit2)
     fit2.model.Ref_period = fit2.data.Ref_period
@@ -3038,48 +3072,46 @@ def sample_plot_nonclass(model=None,
 
     if samples is not None:
         model_err_p, model_err_m = fit2.calculate_fit_uncertanity(samples, Ecorr=e_th, Mintimes=new_Mintimes)
-        # Freeze params for plotting
         for comp in fit2.model.model_components:
             for val in comp.params.values():
                 val.vary = False
-        best_fit = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2, fit2.data.inc, e_th, new_Mintimes)
+        best_fit = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2,
+                                       fit2.data.inc, e_th, new_Mintimes)
         best_fit_left = best_fit * factor_left
         err_p_left = model_err_p * factor_left
         err_m_left = model_err_m * factor_left
-        ax_left.fill_between(e_th, best_fit_left + err_p_left, best_fit_left + err_m_left,
-                             color="gray", alpha=0.15)
+        ax_left.fill_between(e_th, best_fit_left + err_p_left,
+                             best_fit_left + err_m_left, color="gray", alpha=0.15)
     else:
-        # Freeze params for plotting
         for comp in fit2.model.model_components:
             for val in comp.params.values():
                 val.vary = False
-        best_fit = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2, fit2.data.inc, e_th, new_Mintimes)
+        best_fit = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2,
+                                       fit2.data.inc, e_th, new_Mintimes)
         best_fit_left = best_fit * factor_left
 
     ax_left.plot(e_th, best_fit_left, color="r", label="Best Fit", linewidth=3)
     ax_left.axhline(y=0, color="black", linestyle="--", alpha=0.4, linewidth=1)
     
-    # X-axis limits
+    # Set x-axis limits for the main plot (do not force extension)
     if x_lim is None:
         ax_left.set_xlim(e_th_min, e_th_max)
     else:
         ax_left.set_xlim(x_lim)
 
-    # Y-axis limits for main (top) plot
+    # Set y-axis limits for the main plot
     if y_lim is not None:
         ax_left.set_ylim(y_lim)
     else:
-        # Use the true min/max from the data
         left_data_min = oc_left.min()
         left_data_max = oc_left.max()
         if left_data_max == left_data_min:
-            # Edge case if all data is the same
             left_data_min -= 1e-7
             left_data_max += 1e-7
         pad_left = (left_data_max - left_data_min) * 0.05
         ax_left.set_ylim(left_data_min - pad_left, left_data_max + pad_left)
 
-    # If a right y-axis is requested
+    # Setup right y-axis if requested
     if y_axis_right:
         ax_right = ax_left.twinx()
         if y_lim_right is not None:
@@ -3108,77 +3140,97 @@ def sample_plot_nonclass(model=None,
         right_label = "O-C (ms)" if y_axis_right.lower() == "millisecond" else f"O-C ({y_axis_right.title()})"
         ax_right.set_ylabel(right_label, fontsize=label_size)
 
-    # Bottom x-axis
+    # Apply bottom x-axis formatting
     _apply_bottom_xaxis(ax_left, x_axis_bot)
     
-    # Top x-axis (if requested)
+    # ---- Top x-axis: Ticks on January 1 boundaries per your new rules ----
     if x_axis_top is not None:
         ax_top = ax_left.twiny()
+        # Do not extend the main x-range; use the current limits
         ax_top.set_xlim(ax_left.get_xlim())
         ax_top.tick_params(axis='x', labelsize=tick_size_x_top)
-        ax_top.xaxis.set_ticks_position('top')  # Ensure top ticks are visible
+        ax_top.xaxis.set_ticks_position('top')
         if x_axis_top.lower() == "year":
             ref_mintime = getattr(fit2.data, "Ref_mintime", 0)
-            ref_period = getattr(fit2.data, "Ref_period", 1)
+            ref_period  = getattr(fit2.data, "Ref_period", 1)
             x_min, x_max = ax_left.get_xlim()
             bjd_min = ref_mintime + x_min * ref_period
             bjd_max = ref_mintime + x_max * ref_period
-            year_min_approx = int(np.floor(approximate_year_from_bjd(bjd_min)))
-            year_max_approx = int(np.ceil(approximate_year_from_bjd(bjd_max)))
-            year_ticks = range(year_min_approx, year_max_approx + 1)
+            yr_min = approximate_year_from_bjd(bjd_min)
+            yr_max = approximate_year_from_bjd(bjd_max)
+            # Per your instruction: first tick = floor(yr_min) + 1, last tick = ceil(yr_max)
+            first_tick = int(np.floor(yr_min)) + 1
+            last_tick  = int(np.ceil(yr_max))
+            # Try to see if (last_tick - first_tick) is divisible by 8, then 7, then 6.
+            divisor = None
+            for d in [8, 7, 6]:
+                if (last_tick - first_tick) % d == 0:
+                    divisor = d
+                    break
+            # If not divisible, reduce last_tick by 1 until one works.
+            while divisor is None and last_tick > first_tick:
+                last_tick -= 1
+                for d in [8, 7, 6]:
+                    if (last_tick - first_tick) % d == 0:
+                        divisor = d
+                        break
+            if divisor is not None:
+                interval = (last_tick - first_tick) // divisor
+                tick_years = [first_tick + i * interval for i in range(divisor + 1)]
+            else:
+                # Fallback: simply use first_tick and last_tick
+                tick_years = [first_tick, last_tick]
+            # Convert each tick year (January 1) to epoch units.
             top_positions = []
-            for yr in year_ticks:
-                bjd_yr = approximate_bjd_from_year(yr)
-                epoch_val = (bjd_yr - ref_mintime) / ref_period
+            for yr in tick_years:
+                bjd_val = approximate_bjd_from_year(yr)
+                epoch_val = (bjd_val - ref_mintime) / ref_period
                 top_positions.append(epoch_val)
-            ax_top.xaxis.set_major_locator(FixedLocator(list(top_positions)))
-            ax_top.xaxis.set_major_formatter(FixedFormatter([str(yr) for yr in year_ticks]))
+            ax_top.xaxis.set_major_locator(FixedLocator(top_positions))
+            ax_top.xaxis.set_major_formatter(FixedFormatter([str(yr) for yr in tick_years]))
             ax_top.set_xlabel("Year", fontsize=label_size)
         elif x_axis_top.lower() == "bjd":
             ax_top.set_xlabel("BJD", fontsize=label_size)
         elif x_axis_top.lower() == "epoch":
             ax_top.set_xlabel("Cycle", fontsize=label_size)
 
-    # If there are other models to plot for comparison
+    # Plot other models if provided
     if other_models and isinstance(other_models, list):
         fit2b = copy.deepcopy(fit2)
         for om in other_models:
             fit2b.model = om
-            bf2 = fit2b.total_oc_delay([], fit2.data.m1, fit2.data.m2, fit2.data.inc, e_th, new_Mintimes)
+            bf2 = fit2b.total_oc_delay([], fit2.data.m1, fit2.data.m2,
+                                        fit2.data.inc, e_th, new_Mintimes)
             ax_left.plot(e_th, bf2 * factor_left, label="Other Model", linewidth=1)
 
-    # Legend
-    if isinstance(legend_shape, tuple):
-        ncol = legend_shape[0]
-    elif legend_shape is not None:
-        ncol = legend_shape
-    else:
-        ncol = 5
-
-    if isinstance(legend_position, tuple):
-        if isinstance(legend_position[0], str):
-            loc_used, bbox_used = legend_position
-            ax_left.legend(loc=loc_used, bbox_to_anchor=bbox_used, fontsize=legend_size,
-                           ncol=ncol, frameon=False, title="Data Group")
-        else:
-            ax_left.legend(loc="center", bbox_to_anchor=legend_position, fontsize=legend_size,
-                           ncol=ncol, frameon=False, title="Data Group")
-    else:
-        if legend_position.lower() == "best":
-            ax_left.legend(loc="best", fontsize=legend_size, ncol=ncol, frameon=False, title="Data Group")
-        else:
-            loc_dict = {"top": ("upper center", (0.5, 1.02)),
-                        "bottom": ("upper center", (0.5, -0.2)),
-                        "left": ("center left", (-0.1, 0.5)),
-                        "right": ("center right", (1.1, 0.5))}
-            if legend_position.lower() in loc_dict:
-                loc, bbox = loc_dict[legend_position.lower()]
-                ax_left.legend(loc=loc, bbox_to_anchor=bbox, fontsize=legend_size,
-                               ncol=ncol, frameon=False, title="Data Group")
+    # Draw legend if requested
+    if draw_legend:
+        if isinstance(legend_position, tuple):
+            if isinstance(legend_position[0], str):
+                loc_used, bbox_used = legend_position
+                ax_left.legend(loc=loc_used, bbox_to_anchor=bbox_used, fontsize=legend_size,
+                               ncol=legend_shape[0], frameon=False, title="Data Group")
             else:
-                ax_left.legend(loc="best", fontsize=legend_size, ncol=ncol, frameon=False, title="Data Group")
+                ax_left.legend(loc="center", bbox_to_anchor=legend_position, fontsize=legend_size,
+                               ncol=legend_shape[0], frameon=False, title="Data Group")
+        else:
+            if legend_position.lower() == "best":
+                ax_left.legend(loc="best", fontsize=legend_size,
+                               ncol=legend_shape[0], frameon=False, title="Data Group")
+            else:
+                loc_dict = {"top": ("upper center", (0.5, 1.02)),
+                            "bottom": ("upper center", (0.5, -0.2)),
+                            "left": ("center left", (-0.1, 0.5)),
+                            "right": ("center right", (1.1, 0.5))}
+                if legend_position.lower() in loc_dict:
+                    loc, bbox = loc_dict[legend_position.lower()]
+                    ax_left.legend(loc=loc, bbox_to_anchor=bbox, fontsize=legend_size,
+                                   ncol=legend_shape[0], frameon=False, title="Data Group")
+                else:
+                    ax_left.legend(loc="best", fontsize=legend_size,
+                                   ncol=legend_shape[0], frameon=False, title="Data Group")
 
-    # Residuals plot (second subplot), if requested
+    # Residuals subplot if requested
     if res_plot:
         df_reset = fit2.data.df.reset_index(drop=True)
         epochs = df_reset["Ecorr"].values
@@ -3201,8 +3253,6 @@ def sample_plot_nonclass(model=None,
         ax_res.axhline(0, color="black", linestyle="--", linewidth=1)
         _apply_bottom_xaxis(ax_res, x_axis_bot)
         
-        # Default y-limits for residuals
-        # (no forced zero, just the data range + 5% padding)
         res_min = residuals.min()
         res_max = residuals.max()
         if res_max == res_min:
@@ -3223,7 +3273,6 @@ def sample_plot_nonclass(model=None,
         ax_res.yaxis.set_major_formatter(FormatStrFormatter(fmt_res))
         ax_res.tick_params(axis='y', labelsize=tick_size_y_left)
         
-        # Right y-axis for residuals, if requested
         if y_axis_right:
             ax_res_right = ax_res.twinx()
             ratio = factor_right / factor_left
@@ -3240,7 +3289,8 @@ def sample_plot_nonclass(model=None,
         ax_res.set_title("Residuals", fontsize=label_size)
 
     if save_plots:
-        plt.savefig(f"{fit2.data.object_name}_errorbar_plot_{outsuffix}.png", dpi=300, bbox_inches="tight")
+        plt.savefig(f"{fit2.data.object_name}_errorbar_plot_{outsuffix}.png",
+                    dpi=300, bbox_inches="tight")
 
     if show:
         plt.show()
