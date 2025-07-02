@@ -1,70 +1,98 @@
-import uncertainties.unumpy as un
-from uncertainties import ufloat as uf
+# orbit_param_calculator.py 
+
 import numpy as np
-from uncertainties.umath import sin
-from scipy.optimize import root
+from uncertainties import unumpy as unp
 
-def period_in_years(period,period_std,p_orb,p_orb_std):
-    period = uf(period,period_std)
-    p_orb = uf(p_orb,p_orb_std)
-    return period*p_orb/365.242199
-def sma12sini(amp,amp_std,ecc,ecc_std,omega,omega_std):
-    omega = np.deg2rad(omega)
-    omega_std = np.deg2rad(omega_std)
-    amp = uf(amp,amp_std)
-    ecc = uf(ecc,ecc_std)
-    omega = uf(omega,omega_std)
-    return (amp*173.15)/un.sqrt(1-(ecc**2)*un.cos(omega)**2)
+# -----------------------------------------------------------------------------
+# Physical constants 
+# -----------------------------------------------------------------------------
+c             = 299_792_458.0        # speed of light in m/s
+AU            = 1.495978707e11       # astronomical unit in meters
+DAY2AU        = 86400.0 * c / AU     # convert LiTE days → AU (≈173.15)
+DAYS_PER_YEAR = 365.242199           # days per Julian year
 
-def mass_func(period3,period3_std,sma12sini,sma12sini_std):
-    period3 = uf(period3,period3_std)
-    sma12sini = uf(sma12sini,sma12sini_std)
-    return (sma12sini**3)/(period3**2)
-def _m2_func(m2, m1, sini, mf):
-    return (m2 * sini)**3 / (m1 + m2)**2 - mf
+# -----------------------------------------------------------------------------
+# Core functions
+# -----------------------------------------------------------------------------
 
-def mass3(mf, mf_std, m1, m1_std, m2, m2_std, inc=90, inc_std=0.01):
-    """Compute the companion mass with uncertainty."""
-    
-    # Create uncertainties objects without astropy units
-    mf = uf(mf, mf_std)  # mass function
-    m1 = uf(m1, m1_std)  # primary mass
-    m2 = uf(m2, m2_std)  # companion mass
-    inc = uf(inc, inc_std)  # inclination in degrees
-
-    # Convert inclination to radians and calculate sine
-    sini = sin(inc * (3.141592653589793 / 180))  # Convert to radians
-    # Total mass
-    mT = m1 + m2
-
-    # Solve for m2 using the root-finding function
-    res = root(_m2_func, x0=10., args=(mT.nominal_value, sini.nominal_value, mf.nominal_value))
-    if res.success:
-        m2_value = res.x[0]
-        m2_uncertainty = m2_value * (m1.std_dev / m1.nominal_value)  # Proportional uncertainty
-        return uf(m2_value, m2_uncertainty)
-    else:
-        return np.nan
+def period_in_years(P_LiTE, Ref_period):
+    """
+    Convert LiTE period from "cycles of Ref_period" to years.
+    """
+    return (P_LiTE * Ref_period) / DAYS_PER_YEAR
 
 
-def sma12(sma12sini,sma12sini_std,inc,inc_std):
-    inc = np.deg2rad(inc)
-    inc_std = np.deg2rad(inc_std)
-    sma12sini = uf(sma12sini,sma12sini_std)
-    inc = uf(inc,inc_std)
-    return sma12sini/un.sin(inc)
+def a12sini(amp, ecc, omega):
+    """
+    Compute projected inner semi-major axis (a12 * sin(i)) from LiTE amplitude.
+    """
+    num   = amp * DAY2AU
+    denom = unp.sqrt(1 - ecc**2 * unp.cos(omega)**2)
+    return num / denom
 
-def sma3(sma12,sma12_std,mass1,mass1_std,mass2,mass2_std,mass3,mass3_std):
-    sma12 = uf(sma12,sma12_std)
-    mass1 = uf(mass1,mass1_std)
-    mass2 = uf(mass2,mass2_std)
-    mass3 = uf(mass3,mass3_std)
-    return sma12*(mass1+mass2)/mass3
-    
-def ang_sep3(sma12,sma12_std,sma3,sma3_std,paralax,paralax_std):
-    sma12 = uf(sma12,sma12_std)
-    sma3 = uf(sma3,sma3_std)
-    paralax = uf(paralax,paralax_std)
-    parsec = 1./paralax
-    distAU = parsec*206265.
-    return 206205.*(un.arctan((sma12+sma3)/distAU))
+
+def a12(a12sini_au, inc):
+    """
+    Recover true inner semi-major axis a12 from its projection.
+    """
+    return a12sini_au / unp.sin(inc)
+
+
+def mass_func(period_yr, a12sini_au):
+    """
+    Compute the mass function f(m3) = (a12*sin(i))^3 / P^2 in M_sun.
+    """
+    return a12sini_au**3 / period_yr**2
+
+
+def m3sini3(f_mass, m1, m2, tol: float = 1e-15, maxiter: int = 50):
+    """
+    Solve x = m3*sin(i) from the exact equation
+        f_mass = x^3 / (m1 + m2 + x)^2
+    via Newton–Raphson, so that it works with ufloats.
+
+    Parameters
+    ----------
+    f_mass : float or uncertainties.uarray
+        Mass function f(m3) in M_sun.
+    m1, m2 : float or uncertainties.uarray
+        Masses of the inner binary in M_sun.
+    tol : float
+        Convergence tolerance on the change in x (nominal_value).
+    maxiter : int
+        Maximum NR iterations.
+
+    Returns
+    -------
+    x : float or uncertainties.uarray
+        m3 * sin(i) in M_sun.
+    """
+    M12 = m1 + m2
+    # initial guess ignoring m3 in denominator
+    print(f_mass)
+    x = (f_mass * M12**2)**(1/3)
+
+    for _ in range(maxiter):
+        # function and derivative
+        g  = x**3 - f_mass * (M12 + x)**2
+        gp = 3*x**2 - 2*f_mass * (M12 + x)
+        dx = -g/gp
+        x_new = x + dx
+
+        # check convergence on nominal part of dx
+        nv = getattr(dx, "nominal_value", dx)
+        if abs(nv) < tol:
+            x = x_new
+            break
+        x = x_new
+
+    return x
+
+
+def a3sini3(a12_au, m1, m2, m3sini3):
+    """
+    Compute projected tertiary semi-major axis a3*sin(i):
+        a3*sin(i) = a12 * (m1 + m2) / (m3 * sin(i))
+                  = a12 * (m1 + m2) / m3sini3
+    """
+    return a12_au * (m1 + m2) / m3sini3

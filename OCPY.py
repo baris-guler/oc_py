@@ -17,6 +17,7 @@ from rebound_oc_delay import simulate_oc_delay
 import matplotlib.animation as animation
 
 d2sec = 24*60*60
+_LN_2PI = np.log(2.0 * np.pi)
 
 class OC_model:
     """
@@ -46,12 +47,12 @@ class OC_model:
             Saves the model object to a file.
         load_model(filename): 
             Loads a model object from a file.
-        mass3(mf, mf_std, m1, m1_std, m2, m2_std, inc=90, inc_std=0.01): 
-            Computes the minimum companion mass based on the binary mass function.
     """
 
-    def __init__(self, epochs=np.array([]), name="OC_Model", model_components: list = None, 
-                 Ref_mintime=None, Ref_period=None, nan_policy='raise'):
+    def __init__(self, epochs=np.array([]), mintimes=([]), mintypes=([]), 
+                 name="OC_Model", model_components: list = None, 
+                 Ref_mintime=None, Ref_period=None, nan_policy='raise',
+                 m1=None, m2=None, inc=None):
         """
         Initializes a new instance of OC_model.
 
@@ -71,6 +72,9 @@ class OC_model:
         self.Ref_mintime = Ref_mintime
         self.Ref_period = Ref_period
         self.nan_policy = nan_policy
+        self.m1 = m1
+        self.m2 = m2
+        self.inc = inc
 
     def add_model_component(self, model_component):
         """
@@ -243,29 +247,62 @@ class OC_model:
         model_unit_fixed = copy.deepcopy(self)
         for component in model_unit_fixed.model_components:
             for param_name, param_obj in component.params.items():
-                param_obj.value = _unit_conv(
-                    param_obj.value, param_obj.unit, component._main_units[param_name],
-                    ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
-                    parameter_name=param_name, JD_convertable=param_obj.JD_convertable
-                )
-                if param_obj.std is not None:
-                    param_obj.std = _unit_conv(
-                        param_obj.std, param_obj.unit, component._main_units[param_name],
+                if param_name != "T_LiTE":
+                    param_obj.value = _unit_conv(
+                        param_obj.value, param_obj.unit, component._main_units[param_name],
                         ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
                         parameter_name=param_name, JD_convertable=param_obj.JD_convertable
                     )
-                if param_obj.min is not None:
-                    param_obj.min = _unit_conv(
-                        param_obj.min, param_obj.unit, component._main_units[param_name],
+                    if param_obj.std is not None:
+                        param_obj.std = _unit_conv(
+                            param_obj.std, param_obj.unit, component._main_units[param_name],
+                            ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
+                            parameter_name=param_name, JD_convertable=param_obj.JD_convertable
+                        )
+                    if param_obj.min is not None:
+                        param_obj.min = _unit_conv(
+                            param_obj.min, param_obj.unit, component._main_units[param_name],
+                            ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
+                            parameter_name=param_name, JD_convertable=param_obj.JD_convertable
+                        )
+                    if param_obj.max is not None:
+                        param_obj.max = _unit_conv(
+                            param_obj.max, param_obj.unit, component._main_units[param_name],
+                            ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
+                            parameter_name=param_name, JD_convertable=param_obj.JD_convertable
+                        )
+                else:
+                    param_obj.value = _unit_conv(
+                        param_obj.value, param_obj.unit, component._main_units[param_name],
                         ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
                         parameter_name=param_name, JD_convertable=param_obj.JD_convertable
-                    )
-                if param_obj.max is not None:
-                    param_obj.max = _unit_conv(
-                        param_obj.max, param_obj.unit, component._main_units[param_name],
-                        ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
-                        parameter_name=param_name, JD_convertable=param_obj.JD_convertable
-                    )
+                        )
+                    
+                    if param_obj.std is not None:
+                        if param_obj.unit == "BJD" and isinstance(component, LiTE):
+                            param_obj.std = _unit_conv(
+                                param_obj.std, "day", component._main_units[param_name],
+                                ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
+                                parameter_name=param_name, JD_convertable=param_obj.JD_convertable
+                            )
+                        else:
+                            param_obj.std = _unit_conv(
+                                param_obj.std, param_obj.unit, component._main_units[param_name],
+                                ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
+                                parameter_name=param_name, JD_convertable=param_obj.JD_convertable
+                            )
+                    if param_obj.min is not None:
+                        param_obj.min = _unit_conv(
+                            param_obj.min, param_obj.unit, component._main_units[param_name],
+                            ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
+                            parameter_name=param_name, JD_convertable=param_obj.JD_convertable
+                        )
+                    if param_obj.max is not None:
+                        param_obj.max = _unit_conv(
+                            param_obj.max, param_obj.unit, component._main_units[param_name],
+                            ref_period=self.Ref_period, ref_mintime=self.Ref_mintime,
+                            parameter_name=param_name, JD_convertable=param_obj.JD_convertable
+                        )
         return model_unit_fixed
     
     def fix_units_reversed(self):
@@ -299,7 +336,89 @@ class OC_model:
                         parameter_name=param_name, JD_convertable=param_obj.JD_convertable
                     )
         return model_unit_reversed
+    
+    def to_oc_data(self, Ref_mintime, Ref_period, error_sigma=.2, object_name=None):
+        """
+        Generate an OC_data instance containing observation times and O–C values
+        predicted by this model, adding Gaussian noise with a given sigma.
 
+        Parameters
+        ----------
+        Ref_mintime : float
+            Reference minimum time (T₀) to build observation times.
+        Ref_period : float
+            Reference period (P₀) per epoch.
+        error_sigma : float, optional
+            Standard deviation of Gaussian noise to add to the simulated times.
+            If zero (default), no noise is added.
+        object_name : str, optional
+            Name to assign to the created OC_data object.
+            If None, falls back to this OC_model’s own name attribute.
+
+        Returns
+        -------
+        OC_data
+            An OC_data object populated with synthetic O–C data based on this model,
+            with Gaussian errors of standard deviation `error_sigma`.
+        """
+        # 1) Round epochs to nearest integer
+        epochs = np.round(np.atleast_1d(self.epochs).flatten()).astype(int)
+
+        has_abspar = False
+        for i in self.model_components:
+            if isinstance(i, LiTE_abspar):
+                has_abspar = True
+                break
+        if not has_abspar:
+            oc_values = self.calculate_oc(epochs)
+            true_times = Ref_mintime + epochs * Ref_period + oc_values
+            mintype_flags = np.zeros(true_times.shape, dtype=int)
+            errors = np.full(true_times.shape, error_sigma)
+
+        else:
+            temp_times = Ref_mintime + epochs * Ref_period
+            mintype_flags = np.zeros(temp_times.shape, dtype=int)
+            errors = np.full(temp_times.shape, error_sigma)
+            temp_data = OC_data(
+                        object_name = object_name or self.name,
+                        Mintimes    = temp_times,
+                        Mintypes    = mintype_flags,
+                        Errors      = errors,
+                        Ref_mintime = Ref_mintime,
+                        Ref_period  = Ref_period)
+            temp_model = copy.deepcopy(self)
+            for mc in temp_model.model_components:
+                for p, v in mc.params.items():
+                    v.vary=False
+            temp_fit = fit(data=temp_data, model=temp_model)
+            if self.m1 is None or self.m2 is None or self.inc is None:
+                raise ValueError("m1, m2 and inc needed to create oc_data")
+            temp_oc = temp_fit.total_oc_delay([], self.m1, self.m2, self.inc, Ecorr=None)
+            true_times = temp_times + temp_oc
+
+
+        noise = np.random.normal(loc=0.0, scale=error_sigma, size=true_times.shape)
+        observation_times = true_times + noise
+        
+        dg = ['created_data'] * len(observation_times)
+        
+
+        # 7) Assemble and return the OC_data
+        new_data = OC_data(
+            object_name = object_name or self.name,
+            Mintimes    = observation_times,
+            Mintypes    = mintype_flags,
+            Errors      = errors,
+            Ref_mintime = Ref_mintime,
+            Ref_period  = Ref_period,
+            Data_group  = dg
+        )
+        new_data.m1 = self.m1
+        new_data.m2 = self.m2
+        new_data.inc = self.inc
+
+        return new_data
+    
 class OC_data:
     """
     A class for calculating time for corrected orbital phase.
@@ -324,50 +443,74 @@ class OC_data:
         generate_oc: Generates the O-C (Observed minus Calculated) data.
         plot_OC: Plots the orbital phase correction (OC).
     """
-    def __init__(self, object_name="undefined", Mintimes=np.array([]), Mintypes=np.array([]), Errors=np.array([]), Units=np.array([]), Ref_mintime=None, Ref_period=None, Data_group=np.array([]), Weights=np.array([]), data_file=None):
+    def __init__(
+        self,
+        object_name="undefined",
+        Mintimes=None,
+        Mintypes=None,
+        Errors=None,
+        Units=None,
+        Ref_mintime=None,
+        Ref_period=None,
+        Data_group=None,
+        Weights=None,
+        data_file=None
+    ):
+        import numpy as np
+        import pandas as pd
+
         self.object_name = object_name
         self._calculated = False
         self.binned = False
         self.m1 = None
         self.m2 = None
         self.inc = None
+
+        # 1) If a data_file is provided, read everything from it and skip parameter overrides
         if data_file is not None:
             self._read_data_file(data_file)
-        datas = ["Mintimes", "Mintypes", "Errors", "Units", "Ref_mintime", "Ref_period", "Data_group"]
-        for data in datas:
-            if not hasattr(self, data):
-                setattr(self, data, locals().get(data))
-        
-        if self.Errors.size < 1:
-            self.Errors = np.full(self.Mintimes.shape, 1)
-        
-        if self.Mintimes.size > 0 and self.Ref_mintime is not None and self.Ref_period is not None:
+
+        else:
+            # 2) Otherwise, use the passed-in arrays (or defaults)
+            self.Mintimes   = np.atleast_1d(Mintimes) if Mintimes   is not None else np.array([])
+            self.Mintypes   = np.atleast_1d(Mintypes).astype(int) if Mintypes is not None else np.array([], dtype=int)
+            self.Errors     = np.atleast_1d(Errors)   if Errors     is not None else np.full(self.Mintimes.shape, 0.0001)
+            self.Units      = np.atleast_1d(Units)    if Units      is not None else np.full(self.Mintimes.shape, "Default")
+            self.Data_group = np.atleast_1d(Data_group) if Data_group is not None else np.full(self.Mintimes.shape, "None")
+            self.Ref_mintime = Ref_mintime
+            self.Ref_period   = Ref_period
+            self.Weights      = np.atleast_1d(Weights) if Weights is not None else None
+
+        # 3) If weights weren’t provided or loaded as empty, fill defaults
+        if not hasattr(self, 'Weights') or self.Weights is None or self.Weights.size == 0:
+            self.fill_weights()
+
+        # 4) Generate Ecorr and OC only if Mintimes/Mintypes etc. are set and valid
+        if (
+            hasattr(self, 'Mintimes')
+            and self.Mintimes.size > 0
+            and hasattr(self, 'Mintypes')
+            and self.Mintypes.size == self.Mintimes.size
+            and hasattr(self, 'Ref_mintime')
+            and self.Ref_mintime is not None
+            and hasattr(self, 'Ref_period')
+            and self.Ref_period is not None
+        ):
             self.Ecorr, self.OC = self.generate_oc()
         else:
             self.Ecorr = np.array([])
-            self.OC = np.array([])
-            
-        if self.Data_group.size > 0:
-            self.Data_group = np.where(pd.isnull(self.Data_group), 'None', self.Data_group)
-        else:
-            self.Data_group = np.full(self.Mintimes.shape, "None")
-            
-        if self.Units.size == 0:
-            self.Units = np.full(self.Mintimes.shape, "Default")
-            
-        self.Weights = Weights
-        if self.Weights.size == 0:
-            self.fill_weights()
-            
+            self.OC    = np.array([])
+
+        # 5) Build the DataFrame for easy access
         self.df = pd.DataFrame({
-            'Mintimes': self.Mintimes,
-            'Mintypes': self.Mintypes,
-            'Errors': self.Errors,
-            'Units': self.Units,
+            'Mintimes':   self.Mintimes,
+            'Mintypes':   self.Mintypes,
+            'Errors':     self.Errors,
+            'Units':      self.Units,
             'Data_group': self.Data_group,
-            'Ecorr': self.Ecorr,
-            'OC': self.OC,
-            'Weights': self.Weights
+            'Ecorr':      self.Ecorr,
+            'OC':         self.OC,
+            'Weights':    self.Weights
         })
         
     def __setattr__(self, name, value) -> None:
@@ -388,23 +531,66 @@ class OC_data:
                 if not self._calculated:
                     self.Ecorr, self.OC = self.generate_oc()
                     
-    def remove_data(self, values_x_min=None, values_x_max=None, values_y_min=None, values_y_max=None, data_groups=None):
+    def remove_data(self,
+                    values_x_min=None,
+                    values_x_max=None,
+                    values_y_min=None,
+                    values_y_max=None,
+                    data_groups=None):
+        """
+        Return a copy of the data with measurements inside the specified rectangle
+        or matching groups removed.
+
+        Parameters:
+            values_x_min (float): Lower Ecorr bound of region to delete.
+            values_x_max (float): Upper Ecorr bound of region to delete.
+            values_y_min (float): Lower O–C bound of region to delete.
+            values_y_max (float): Upper O–C bound of region to delete.
+            data_groups (str or list): Group label(s) to remove entirely.
+        """
+        # deep‐copy so we don’t mutate the original
         new_data = copy.deepcopy(self)
-        if values_x_min is not None:
-            new_data.df = new_data.df[new_data.df["Ecorr"] > values_x_min]
-        if values_x_max is not None:
-            new_data.df = new_data.df[new_data.df["Ecorr"] < values_x_max]
-        if values_y_min is not None:
-            new_data.df = new_data.df[new_data.df["OC"] > values_y_min]
-        if values_y_max is not None:
-            new_data.df = new_data.df[new_data.df["OC"] < values_y_max]
-        if data_groups is not None and isinstance(data_groups, str):
-            new_data.df = new_data.df[new_data.df["Data_group"] != data_groups]
-        elif data_groups is not None and isinstance(data_groups, list):
-            new_data.df = new_data.df[~new_data.df["Data_group"].isin(data_groups)]
+        df = new_data.df
+
+        # remove points inside the x‐range
+        if values_x_min is not None and values_x_max is not None:
+            # drop rows where Ecorr is between x_min and x_max (inclusive)
+            df = df[~((df["Ecorr"] >= values_x_min) & (df["Ecorr"] <= values_x_max))]
+        elif values_x_min is not None:
+            # drop rows where Ecorr is >= x_min
+            df = df[~(df["Ecorr"] >= values_x_min)]
+        elif values_x_max is not None:
+            # drop rows where Ecorr is <= x_max
+            df = df[~(df["Ecorr"] <= values_x_max)]
+
+        # remove points inside the y‐range
+        if values_y_min is not None and values_y_max is not None:
+            # drop rows where OC is between y_min and y_max (inclusive)
+            df = df[~((df["OC"] >= values_y_min) & (df["OC"] <= values_y_max))]
+        elif values_y_min is not None:
+            # drop rows where OC is >= y_min
+            df = df[~(df["OC"] >= values_y_min)]
+        elif values_y_max is not None:
+            # drop rows where OC is <= y_max
+            df = df[~(df["OC"] <= values_y_max)]
+
+        # remove entire data groups if requested
+        if data_groups is not None:
+            if isinstance(data_groups, str):
+                df = df[df["Data_group"] != data_groups]
+            elif isinstance(data_groups, list):
+                df = df[~df["Data_group"].isin(data_groups)]
+
+        new_data.df = df
         return new_data
             
     def fill_weights(self, value=None):
+        """
+        Populate or reset the Weights array for fitting based on Errors or constant value.
+
+        Parameters:
+            value (float, optional): If provided, all weights set to this constant.
+        """
         if value == None:
             self.Weights = 1/self.Errors**2
         else:
@@ -459,6 +645,19 @@ class OC_data:
         return new_data
     
     def filter_data_range(self, dtype=None, min_value=-np.inf, max_value=np.inf, eq=None, noteq=None, plot=False):
+        """
+        Filter data by column name and range, or equality conditions.
+
+        Parameters:
+            dtype (str): Column in df to filter.
+            min_value (float): Lower bound.
+            max_value (float): Upper bound.
+            eq (any): Exact match filter.
+            noteq (any): Exclusion filter.
+            plot (bool): Show outlier plot if True.
+        Returns:
+            OC_data: Filtered instance.
+        """
         if dtype is None:
             raise ValueError("dtype must be provided")
         if min_value == -np.inf and max_value == np.inf:
@@ -507,56 +706,83 @@ class OC_data:
         
     def _plot_outliers(self, outliers, v_lines=[], h_lines=[]):
         """
-        Plots outliers
+        Plots outliers on a bigger figure.
+
+        Parameters
+        ----------
+        outliers : boolean array
+            Mask of which points are outliers.
+        v_lines : list of floats, optional
+            x-positions at which to draw vertical limit lines.
+        h_lines : list of floats, optional
+            y-positions at which to draw horizontal limit lines.
+        figsize : tuple, optional
+            Figure size in inches, defaults to (12, 6).
         """
+        import matplotlib.pyplot as plt
+
+        # Prepare data
         Ecorr_outlier = self.Ecorr[outliers]
-        OC_Outlier = self.OC[outliers]
-        Ecorr_res = self.Ecorr[~outliers]
-        OC_res = self.OC[~outliers]
-        for v_line in v_lines:
-            plt.axvline(v_line, color="r", linestyle="--", label="Vertical Limits")
-        for h_line in h_lines:
-            plt.axhline(h_line, color="r", linestyle="--", label="Horizontal Limits")
-        plt.xlabel("Ecorr")
-        plt.ylabel("OC")
-        plt.legend
+        OC_outlier    = self.OC[outliers]
+        Ecorr_res     = self.Ecorr[~outliers]
+        OC_res        = self.OC[~outliers]
+
+        # Create figure & axes with custom size
+        fig, ax = plt.subplots(figsize=(14,8))
+
+        # Draw limit lines (if any)
+        v_lines = v_lines or []
+        for v in v_lines:
+            ax.axvline(v, color="r", linestyle="--", label="Vertical Limits")
+        h_lines = h_lines or []
+        for h in h_lines:
+            ax.axhline(h, color="r", linestyle="--", label="Horizontal Limits")
+
+        # Plot outliers vs. the rest
         if len(Ecorr_outlier) > 0:
-            plt.plot(Ecorr_outlier, OC_Outlier, "rx", label="Outliers")
-        plt.plot(Ecorr_res, OC_res, "b.", label="res")
-        plt.legend()
+            ax.plot(Ecorr_outlier, OC_outlier, "rx", label="Outliers")
+        ax.plot(Ecorr_res, OC_res, "b.", label="Inliers")
+
+        # Labels & legend
+        ax.set_xlabel("Cycles")
+        ax.set_ylabel("O–C")
+        ax.legend()
+
         plt.show()
         
-    def sigma_outliers(self, treshold=3, plot=False, OC=None, additional_method = None, additional_params = None):
+    def sigma_outliers(self, threshold=3, plot=False, OC=None, additional_method = None, additional_params = None):
         """
         Identifies outliers using sigma-clipping method.
 
         Args:
-            treshold (float): Number of standard deviations to consider as threshold.
+            threshold (float): Number of standard deviations to consider as threshold.
             plot (bool): Whether to plot outliers.
             OC (numpy.ndarray): Array of observed minus calculated (O-C) values.
-            additional_method (str): Additional method for outlier detection. Can be 'moving_window, 'fixed_window' or 'spline'.
+            additional_method (str): Additional method for outlier detection. Can be 'moving_window', 'fixed_window' or 'spline'.
             additional_params (dict): Additional parameters for additional_method.
 
         Returns:
             numpy.ndarray: Boolean array indicating outliers.
         """
         if additional_method is not None:
-            outliers = self._addm(additional_method, additional_params, main="sigma_outliers", main_params=[treshold], plot=plot)
+            if additional_method not in ['moving_window', 'fixed_window', 'spline']:
+                raise ValueError("Invalid additional method. Choose 'moving_window', 'fixed_window' or 'spline'.")
+            outliers = self._addm(additional_method, additional_params, main="sigma_outliers", main_params=[threshold], plot=plot)
             return outliers
         OC = self.OC if OC is None else OC
         mean_oc = np.mean(OC)
         std_oc = np.std(OC)
-        condition = (OC < mean_oc + treshold*std_oc) & (OC > mean_oc - treshold*std_oc)
+        condition = (OC < mean_oc + threshold*std_oc) & (OC > mean_oc - threshold*std_oc)
         if plot:
-            self._plot_outliers(~condition, h_lines=[mean_oc + treshold*std_oc, mean_oc - treshold*std_oc])
+            self._plot_outliers(~condition, h_lines=[mean_oc + threshold*std_oc, mean_oc - threshold*std_oc])
         return ~condition
     
-    def zscore_outliers(self, treshold=3, plot=False, OC=None, additional_method = None, additional_params = None):
+    def zscore_outliers(self, threshold=3, plot=False, OC=None, additional_method = None, additional_params = None):
         """
         Identifies outliers using z-score method.
 
         Args:
-            treshold (float): Number of standard deviations to consider as threshold.
+            threshold (float): Number of standard deviations to consider as threshold.
             plot (bool): Whether to plot outliers.
             OC (numpy.ndarray): Array of observed minus calculated (O-C) values.
             additional_method (str): Additional method for outlier detection. Can be 'moving_window, 'fixed_window' or 'spline'.
@@ -567,22 +793,22 @@ class OC_data:
         """
         from scipy.stats import zscore
         if additional_method is not None:
-            outliers = self._addm(additional_method, additional_params, main="zscore_outliers", main_params=[treshold], plot=plot)
+            outliers = self._addm(additional_method, additional_params, main="zscore_outliers", main_params=[threshold], plot=plot)
             return outliers
         OC = self.OC if OC is None else OC
         z_scores = zscore(OC)
-        condition = np.abs(z_scores) < treshold
+        condition = np.abs(z_scores) < threshold
         if plot:
             self._plot_outliers(~condition)
         return ~condition
     
-    def box_outliers(self, plot=False, treshold=1.5, OC=None, additional_method = None, additional_params = None):
+    def box_outliers(self, plot=False, threshold=1.5, OC=None, additional_method = None, additional_params = None):
         """
         Identifies outliers using boxplot method.
 
         Args:
             plot (bool): Whether to plot outliers.
-            treshold (float): Multiplier for the interquartile range to consider as threshold.
+            threshold (float): Multiplier for the interquartile range to consider as threshold.
             OC (numpy.ndarray): Array of observed minus calculated (O-C) values.
             additional_method (str): Additional method for outlier detection. Can be 'moving_window, 'fixed_window' or 'spline'.
             additional_params (dict): Additional parameters for additional_method.
@@ -591,26 +817,26 @@ class OC_data:
             numpy.ndarray: Boolean array indicating outliers.
         """
         if additional_method is not None:
-            outliers = self._addm(additional_method, additional_params, main="zscore_outliers", main_params=[treshold], plot=plot)
+            outliers = self._addm(additional_method, additional_params, main="zscore_outliers", main_params=[threshold], plot=plot)
             return outliers
         OC = self.OC if OC is None else OC
         q1 = np.percentile(OC, 25)
         q3 = np.percentile(OC, 75)
         iqr = q3 - q1
-        lower_threshold = q1 - treshold * iqr
-        upper_threshold = q3 + treshold * iqr
+        lower_threshold = q1 - threshold * iqr
+        upper_threshold = q3 + threshold * iqr
         outliers = np.logical_or(OC < lower_threshold, OC > upper_threshold)
         if plot:
             self._plot_outliers(outliers, h_lines=[lower_threshold, upper_threshold])
         return outliers
     
-    def chauvenet_outliers(self, plot=False, treshold=0.5, OC=None, additional_method = None, additional_params = None):
+    def chauvenet_outliers(self, plot=False, threshold=0.5, OC=None, additional_method = None, additional_params = None):
         """
         Identifies outliers using Chauvenet's criterion method.
 
         Args:
             plot (bool): Whether to plot outliers.
-            treshold (float): Threshold probability for Chauvenet's criterion.
+            threshold (float): Threshold probability for Chauvenet's criterion.
             OC (numpy.ndarray): Array of observed minus calculated (O-C) values.
             additional_method (str): Additional method for outlier detection.
             additional_params (dict): Additional parameters for additional_method.
@@ -619,7 +845,7 @@ class OC_data:
             numpy.ndarray: Boolean array indicating outliers.
         """
         if additional_method is not None:
-            outliers = self._addm(additional_method, additional_params, main="zscore_outliers", main_params=[treshold], plot=plot)
+            outliers = self._addm(additional_method, additional_params, main="zscore_outliers", main_params=[threshold], plot=plot)
             return outliers
         from scipy import stats as st
         OC = self.OC if OC is None else OC
@@ -628,7 +854,7 @@ class OC_data:
         d = ((OC - mean) / std)
         possibility = st.norm.cdf(d)
         criteria = (1 - possibility) * len(OC)
-        outliers = criteria < treshold
+        outliers = criteria < threshold
         if plot:
             self._plot_outliers(outliers)
         return outliers
@@ -644,14 +870,14 @@ class OC_data:
                 additional_params[i] = None
         if additional_method is not None:
             if additional_method == "moving_window":
-                outliers = self._moving_window(window_rate=additional_params["window_rate"], window_step_rate=additional_params["window_step_rate"], window_size=additional_params["window_size"], method=main, window_start=additional_params["window_start"], treshold=main_params[0], plot=plot)
+                outliers = self._moving_window(window_rate=additional_params["window_rate"], window_step_rate=additional_params["window_step_rate"], window_size=additional_params["window_size"], method=main, window_start=additional_params["window_start"], threshold=main_params[0], plot=plot)
             elif additional_method == "fixed_window":
-                outliers = self._fixed_window(window_rate=additional_params["window_rate"], window_size=additional_params["window_size"], window_count=additional_params["window_count"], window_start=additional_params["window_start"], method=main, treshold=main_params[0], plot=plot)
+                outliers = self._fixed_window(window_rate=additional_params["window_rate"], window_size=additional_params["window_size"], window_count=additional_params["window_count"], window_start=additional_params["window_start"], method=main, threshold=main_params[0], plot=plot)
             elif additional_method == "spline":
-                outliers = self._spline(smoothing=additional_params["smoothing"], degree=additional_params["degree"], method=main, treshold=main_params[0], plot=plot)
+                outliers = self._spline(smoothing=additional_params["smoothing"], degree=additional_params["degree"], method=main, threshold=main_params[0], plot=plot)
         return outliers
 
-    def _moving_window(self, window_rate=.1, window_step_rate=.01, window_size=None, method="sigma_outliers", window_start=None, treshold=3, plot=False):
+    def _moving_window(self, window_rate=.1, window_step_rate=.01, window_size=None, method="sigma_outliers", window_start=None, threshold=3, plot=False):
         """
         Handles moving_window parameter situation for outlier finding methods
         Creates a window and slide it along the graph. Finds outliers for per slide.
@@ -669,7 +895,7 @@ class OC_data:
         window_end = dif * window_rate
         while window_start < max(self.Ecorr):
             OC_window = self.OC[(self.Ecorr >= window_start) & (self.Ecorr <= window_end)]
-            outliers = np.concatenate((outliers, OC_window[method(treshold=treshold, OC=OC_window)]))
+            outliers = np.concatenate((outliers, OC_window[method(threshold=threshold, OC=OC_window)]))
             window_start += dif * window_step_rate
             window_end += dif * window_step_rate
         outliers = np.unique(outliers)
@@ -678,7 +904,7 @@ class OC_data:
             self._plot_outliers(outliers)
         return outliers
     
-    def _fixed_window(self, window_rate=.1, window_size=None, window_count=None, window_start=None,  method="sigma_outliers", treshold=3, plot=False):
+    def _fixed_window(self, window_rate=.1, window_size=None, window_count=None, window_start=None,  method="sigma_outliers", threshold=3, plot=False):
         """
         Handles fixed_window parameter situation for outlier finding methods
         creates fixed windows along the graph. Finds outliers for per window.
@@ -701,7 +927,7 @@ class OC_data:
             end = split_points[i + 1]
             OC_list.append(self.OC[(self.Ecorr >= start) & (self.Ecorr < end)])
         for array in OC_list:
-            outliers = np.concatenate((outliers, array[method(treshold=treshold, OC=array)]))
+            outliers = np.concatenate((outliers, array[method(threshold=threshold, OC=array)]))
         outliers = np.isin(np.arange(len(self.OC)), np.where(np.isin(self.OC, outliers)))
         if plot:
             for i in split_points:
@@ -709,7 +935,7 @@ class OC_data:
             self._plot_outliers(outliers)
         return outliers
 
-    def _spline(self, smoothing=1, degree=3, method="sigma_outliers", treshold=3, plot=False):
+    def _spline(self, smoothing=1, degree=3, method="sigma_outliers", threshold=3, plot=False):
         """
         Handles spline parameter situation for outlier finding methods
         Creates spline. Get residual from spline and uses given method to find outliers.
@@ -729,7 +955,7 @@ class OC_data:
 
         OC_dif = OC_unique - oc_interpolated
 
-        outliers = method(treshold=treshold, OC=OC_dif)
+        outliers = method(threshold=threshold, OC=OC_dif)
 
         if plot:
             self._plot_outliers(outliers)
@@ -775,8 +1001,9 @@ class OC_data:
         def median(df, weights):
             median_oc = np.median(df["OC"])
             median_Ecorr = np.average(df["Ecorr"])
-            median_error = .1
-            return median_Ecorr, median_oc, median_error
+            sum_weights = np.sum(weights)
+            weighted_error = 1 / np.sqrt(sum_weights)
+            return median_Ecorr, median_oc, weighted_error
 
         if group is not None and (start_x is None or end_x is None):
             df = self.df[self.df["Data_group"]==group]
@@ -982,6 +1209,11 @@ class OC_data:
         return new_data
 
     def get_weighted_mean_manual(self):
+        """
+        Launch an interactive selector to manually choose weighting limits.
+
+        This will open a plot window. Follow on-screen prompts to accept or cancel.
+        """
         cont = True
         while cont:
             fig, ax = plt.subplots()
@@ -1013,6 +1245,14 @@ class OC_data:
             return selector.selected
         
     def convert_units(self, desired_unit):
+        """
+        Convert all Mintimes between HJD and BJD based on RA/DEC.
+
+        Parameters:
+            desired_unit (str): 'HJD' or 'BJD'.
+        Raises:
+            ValueError: If missing coordinate data or unknown units.
+        """
         if self.RA is None or self.DEC is None:
             raise ValueError("RA and DEC values needed for unit conversion")
         for unit in self.Units:
@@ -1039,6 +1279,9 @@ class OC_data:
 
     @staticmethod
     def helio_to_bary(ra_deg, dec_deg, hjd):
+        """
+        Convert Heliocentric JD to Barycentric JD for given sky coordinates.
+        """
         fix = False
         if hjd < 2400000:
             hjd += 2400000
@@ -1058,6 +1301,9 @@ class OC_data:
 
     @staticmethod
     def bary_to_helio(ra_deg, dec_deg, bjd):
+        """
+        Convert Barycentric JD to Heliocentric JD for given sky coordinates.
+        """
         fix = False
         if bjd < 2400000:
             bjd += 2400000
@@ -1076,18 +1322,51 @@ class OC_data:
         return hjd
     
     def lomb_scargle(self, min_freq, max_freq, num_frequencies, plot=False):
+        """
+        Compute Lomb-Scargle periodogram of O-C and return the dominant period.
+
+        Parameters:
+            min_freq (float): Minimum frequency to scan.
+            max_freq (float): Maximum frequency to scan.
+            num_frequencies (int): Number of frequency steps.
+            plot (bool): Display the periodogram if True.
+
+        Returns:
+            frequencies (ndarray): Array of scanned frequencies.
+            power (ndarray): Normalized Lomb–Scargle power.
+            peak_freq (float): Frequency with maximum power.
+            peak_period (float): Dominant period = 1/peak_freq.
+        """
+        import numpy as np
         from scipy.signal import lombscargle
+        import matplotlib.pyplot as plt
+
+        # 1) build frequency grid and convert to angular freqs
         frequencies = np.linspace(min_freq, max_freq, num_frequencies)
         angular_frequencies = 2 * np.pi * frequencies  
 
+        # 2) compute raw periodogram on (t,y) = (self.Ecorr, self.OC)
         pgram = lombscargle(self.Ecorr, self.OC, angular_frequencies)
 
-        pgram_normalized = pgram / (len(self.Ecorr) / 2)
+        # 3) normalize by N/2 to get comparable power
+        power = pgram / (len(self.Ecorr) / 2)
+
+        # 4) find peak frequency and compute its period
+        idx_peak   = np.argmax(power)        # index of maximum power
+        peak_freq  = frequencies[idx_peak]   # most significant frequency
+        peak_period = 1.0 / peak_freq        # corresponding period
+
+        # 5) optional: plot and mark the peak
         if plot:
-            plt.plot(frequencies, pgram_normalized)
+            plt.plot(frequencies, power, label='Lomb–Scargle')
+            plt.axvline(peak_freq, color='r', linestyle='--',
+                        label=f'Peak @ {peak_freq:.2e} (1/peak={peak_period:.0f})')
             plt.xlabel('Frequency')
             plt.ylabel('Normalized Power')
+            plt.legend()
             plt.show()
+
+        return frequencies, power, peak_freq, peak_period
 
 
     # Creating O-C with data
@@ -1165,7 +1444,7 @@ class OC_data:
         for y in horizontal_lines:
             plt.axhline(y=y, color='grey', linestyle='--')
             
-        plt.xlabel("Corrected Epoch")
+        plt.xlabel("Cycle")
         plt.ylabel("O-C")
         
         if legend:
@@ -1204,11 +1483,11 @@ class fit:
         model: The model instance containing model components and reference parameters.
         data: The observational data object (e.g., an OC_data instance).
         samples: Array of samples from the fitting process (if available).
-        outsuffix: Suffix to append to output filenames.
+        outfile_tag: Suffix to append to output filenames.
         fitted_model: The updated model instance with fitted parameter values.
     """
 
-    def __init__(self, model, data):
+    def __init__(self, model, data, integrator="IAS15"):
         """
         Initializes the fit instance.
 
@@ -1219,23 +1498,117 @@ class fit:
         self.model = model
         self.data = data
         self.samples = None  
-        self.outsuffix = None
+        self.outfile_tag = None
+        self.integrator = integrator
 
     def model_params(self, model=None):
-        dic = {}
-        if model is None:
-            if hasattr(self, "fitted_model"):
-                model = self.fitted_model
-            else:
-                model = self.model
-        for mc in model.model_components:
-            for param in mc.params:
-                #TODO aşağıdakini uncomment et 2 alttakini sil
-                #dic[mc.name + " " +param] = mc.params[param]
-                dic[param] = mc.params[param]
-        for mc in model.model_components:
-            print(mc.params)
-        return dic
+        """
+        Return a pandas DataFrame of model parameters, always including uncertainties.
+
+        Parameters
+        ----------
+        model : OC_model, optional
+            The model whose parameters to tabulate (default: self.fitted_model if available, else self.model).
+
+        Returns
+        -------
+        pandas.DataFrame
+            Table with columns ['Component', 'Parameter', 'Value', 'Std', 'Unit'].
+        """
+        import rebound
+        import numpy as np
+        import pandas as pd
+
+        # If no model was passed in, use fitted_model if it exists, otherwise self.model
+        model = model or getattr(self, "fitted_model", self.model)
+
+        rows = []
+        for comp in model.model_components:
+            # 1) Add each parameter (name, value, std, unit) as-is
+            for pname, pobj in comp.params.items():
+                rows.append({
+                    "Component": comp.name,
+                    "Parameter": pname,
+                    "Value": pobj.value,
+                    "Std": pobj.std,
+                    "Unit": pobj.unit
+                })
+
+            # 2) If this component is of type LiTE_abspar, compute the "a" parameter and its uncertainty with Rebound
+            if isinstance(comp, LiTE_abspar):
+                # --- 2.1) Extract the values of LiTE_abspar parameters ---
+                m3_val    = comp.mass.value      # Mass of the third body (Msun)
+                sigma_m3  = comp.mass.std        # Uncertainty of m3 (Msun)
+
+                P_val     = comp.P_LiTE.value    # LiTE period (in days)
+                sigma_P   = comp.P_LiTE.std      # Uncertainty of P (days)
+
+                e_val     = comp.ecc.value       # Eccentricity
+                inc_deg   = comp.inc.value       # Inclination (in degrees)
+                omega_deg = comp.omega.value     # Argument of periastron (in degrees)
+                T_val     = comp.T_LiTE.value    # Time of periastron (Julian Day)
+
+                # --- 2.2) Convert angles from degrees to radians ---
+                inc_rad   = np.radians(inc_deg)
+                omega_rad = np.radians(omega_deg)
+
+                # --- 2.3) Set up the Rebound simulation ---
+                sim = rebound.Simulation()
+                sim.units = ('day', 'AU', 'Msun')   # Units: time=day, distance=AU, mass=Msun
+                sim.integrator = "IAS15"
+                sim.dt = 0.5
+
+                # 2.3.a) Add the binary as a single central mass (m1 + m2)
+                #     We assume self.data.m1, self.data.m2, self.data.m1_std, self.data.m2_std exist
+                m1_val   = self.data.m1
+                m2_val   = self.data.m2
+                sigma_m1 = getattr(self.data, "m1_std", 0.0)
+                sigma_m2 = getattr(self.data, "m2_std", 0.0)
+
+                sim.add(m = m1_val + m2_val)
+
+                # 2.3.b) Add the third body; Rebound computes a3 automatically from P=P_val
+                sim.add(
+                    m     = m3_val,
+                    P     = P_val,
+                    e     = e_val,
+                    inc   = inc_rad,
+                    T     = T_val,
+                    omega = omega_rad
+                )
+
+                # 2.3.c) Shift to center-of-mass reference
+                sim.move_to_com()
+
+                # 2.4) The semimajor axis of the third body: .particles[1].a (in AU)
+                a3_val = sim.particles[1].a
+
+                # --- 2.5) Propagate uncertainties to get Std(a3) ---
+                # Total mass M_tot = m1 + m2 + m3
+                M_tot     = m1_val + m2_val + m3_val
+                sigma_M   = np.sqrt(sigma_m1**2 + sigma_m2**2 + sigma_m3**2)
+
+                # Fractional uncertainties
+                frac_M = sigma_M / M_tot if M_tot != 0 else 0.0
+                frac_P = sigma_P / P_val if P_val != 0 else 0.0
+
+                # For Kepler's law a ∝ (M_tot * P^2)^{1/3}, fractional error:
+                # Δa / a = (1/3) * sqrt( (ΔM / M_tot)^2 + (2 * ΔP / P)^2 )
+                sigma_a3 = a3_val * np.sqrt((frac_M / 3)**2 + ((2 * frac_P) / 3)**2)
+
+                # 2.6) Append the computed a3 value and its uncertainty to the table
+                rows.append({
+                    "Component": comp.name,
+                    "Parameter": "a",
+                    "Value": a3_val,
+                    "Std": sigma_a3,
+                    "Unit": "AU"
+                })
+
+        df = pd.DataFrame(rows, columns=["Component", "Parameter", "Value", "Std", "Unit"])
+        return df
+
+        
 
     def save_fit(self, filename):
         """
@@ -1263,11 +1636,26 @@ class fit:
         
     def fit_model(self, method='leastsq', iter_cb=None, scale_covar=True, verbose=False, 
                 fit_kws=None, nan_policy=None, calc_covar=True, max_nfev=None, 
-                coerce_farray=True, **kwargs):
+                coerce_farray=True, integrator="IAS15", **kwargs):
         """
-        Fits the model to the observational data using non-linear least-squares minimization
-        with the total_oc_delay function, letting total_oc_delay handle unit conversions.
+        Perform least squares fit (use leastsq as method)
+        or nelder-mead fit (use nelder as method)
+        on O-C data using lmfit.
+
+        Parameters:
+            method (str): Minimization algorithm name. (nelder or leastsq)
+            iter_cb (callable): Callback function per iteration.
+            scale_covar (bool): Scale the covariance matrix.
+            verbose (bool): Print detailed output if True.
+            fit_kws (dict): Additional kwargs for lmfit.
+            nan_policy (str): NaN handling policy.
+            calc_covar (bool): Calculate covariance if True.
+            max_nfev (int): Max function evaluations.
+            coerce_farray (bool): Force array conversion.
+        Returns:
+            lmfit.MinimizerResult: Fit result object.
         """
+        self.integrator=integrator
         # Prepare variable parameter names in order.
         variable_param_names = []
         for component in self.model.model_components:
@@ -1284,7 +1672,7 @@ class fit:
                 variable_params.append(params[full_name])
             # Call total_oc_delay with the extracted raw parameters.
             return self.total_oc_delay(
-                variable_params, m1=0, m2=0, inc=0, Ecorr=x, Mintimes=self.data.Mintimes, fix_units_first=True
+                variable_params, m1=self.data.m1, m2=self.data.m2, inc=self.data.inc, Ecorr=x, fix_units_first=True, mintimes_in_data=True
             )
 
         # Assemble lmfit Parameters with **raw values**, no conversion.
@@ -1323,14 +1711,13 @@ class fit:
 
     def fit_lin(self, inplace=True, plot=False):
         """
-        Fits a simple linear model to the O-C data and removes the linear trend.
+        Fit and remove linear trend from O-C residuals.
 
         Parameters:
-            inplace (bool): If True, changes Ref_period and Ref_mintime using the fit, then recalculates epoch and O-C.
-            plot (bool): If True, plots the original O-C data with the fitted linear trend.
-
+            inplace (bool): Update data references if True.
+            plot (bool): Plot trend and data if True.
         Returns:
-            result: The lmfit result from the linear fit.
+            lmfit.MinimizerResult: Result of linear fit.
         """
         # If plotting, store the original O-C data before any modifications.
         if plot:
@@ -1376,8 +1763,13 @@ class fit:
 
     def create_fit_model(self, result, first=None):
         """
-        Creates an updated model instance by setting each component's parameter to the fitted value.
-        If stderr (uncertainty) is not available, sets it to np.nan.
+        Construct a new OC_model instance with parameters set to fit result values.
+
+        Parameters:
+            result (lmfit.MinimizerResult): Fit output.
+            first: Unused placeholder.
+        Returns:
+            OC_model: Model with updated parameters and uncertainties.
         """
         new_model = copy.deepcopy(self.model)
         fitted_params = result.params    
@@ -1407,115 +1799,143 @@ class fit:
         
     def create_model_from_samples(self, samples):
         """
-        Creates a new model instance from MCMC samples by setting variable parameters
-        to the median of the sample distribution.
+        Generate model instance from median and std of MCMC samples for free parameters.
 
         Parameters:
-            samples (np.ndarray): Array of MCMC samples.
-
+            samples (np.ndarray): MCMC samples shape (n_samples, n_parameters).
         Returns:
-            new_model: A deepcopy of the original model with parameters updated to the sample medians.
+            OC_model: New model with values from posterior medians.
         """
-        p0 = []
         variable_indices = []
+        for comp in self.model.model_components:
+            for par in comp.params.values():
+                if par.vary:
+                    variable_indices.append(len(variable_indices))
 
-        # Collect initial parameter values and record indices for variable parameters.
-        for model_component in self.model.model_components:
-            for attr, value in model_component.params.items():
-                p0.append(value.value)
-                if value.vary:
-                    variable_indices.append(len(p0) - 1)
-                    
-        s, ndim = samples.shape
-        # Compute the 16th, 50th, and 84th percentiles.
-        results_mcmc = list(map(lambda v: (v[1], v[2] - v[1], v[1] - v[0]),
-                                 zip(*np.percentile(samples, [16, 50, 84], axis=0))))
-        results_par = [results_mcmc[i][0] for i in range(ndim)]
-        results_std = np.std(samples, axis=0)
-        counter0 = 0
-        counter1 = 0
+        medians = np.median(samples, axis=0)           # shape: (dim_count,)
+        stds    = np.std(samples, axis=0, ddof=0)      # shape: (dim_count,)
+
         new_model = copy.deepcopy(self.model)
-        # Update each variable parameter with the median sample value.
-        for model_component in new_model.model_components:
-            for parameter in model_component.params:
-                if counter1 in variable_indices:
-                    setattr(model_component, parameter, results_par[counter0])
-                    setattr(getattr(model_component, parameter), "std", results_std[counter0])
-                    counter0 += 1
-                counter1 += 1
+        flat_counter = 0  # single counter that walks through *all* parameters
+
+        for comp in new_model.model_components:
+            for name, par in comp.params.items():
+                if par.vary:
+                    par.value = medians[flat_counter]
+                    par.std   = stds[flat_counter]
+                    flat_counter += 1
+
         new_model.Ref_mintime = self.data.Ref_mintime
-        new_model.Ref_period = self.data.Ref_period
+        new_model.Ref_period  = self.data.Ref_period
+
         return new_model
         
     def read_samples(self, sample_file):
         """
-        Reads MCMC samples from a text file.
+        Load MCMC samples saved in a text file.
 
         Parameters:
-            sample_file (str): Path to the sample file.
-
+            sample_file (str): Path to samples file.
         Returns:
-            np.ndarray: Array of samples.
+            np.ndarray: Array of loaded samples.
         """
         samples = np.loadtxt(sample_file)
         return samples
 
-    def trace_plot(self, sampler, outsuffix="", save_plots=False, show=False):
+    def trace_plot(
+            self,
+            sampler,
+            outfile_tag: str = "",
+            save_plots: bool = False,
+            show: bool = False,
+            labels_override: list[str] | None = None,
+            *,
+            n_cols: int = 3,
+            alpha: float = 0.7,
+            fig_width_per_col: float = 4.0,
+            fig_height_per_row: float = 2.2,
+            dpi: int = 300,
+    ) -> None:
         """
-        Generates trace plots for each parameter from an emcee sampler with proper parameter names.
+        Plot MCMC trace lines for each free parameter.
 
         Parameters:
-            sampler: An emcee sampler object.
-            outsuffix (str): Suffix for the output filename.
-            save_plots (bool): If True, saves the plot to a file.
-            show (bool): If True, displays the plot.
-
-        Returns:
-            None
+            sampler (emcee.EnsembleSampler): Sample generator after run.
+            outfile_tag (str): Suffix for plot filenames.
+            save_plots (bool): Save plot images if True.
+            show (bool): Show plot if True.
+            labels_override (list[str]): Custom labels for parameters.
+            n_cols (int): Number of subplot columns.
+            alpha (float): Line opacity.
+            fig_width_per_col (float): Width per column.
+            fig_height_per_row (float): Height per row.
+            dpi (int): Figure resolution.
         """
-        import math
+        import numpy as np
+        import matplotlib.pyplot as plt
 
-        nwalkers, nsteps, ndim = sampler.chain.shape
-        ncols = 3  # Define the number of columns in the subplot grid.
-        nrows = math.ceil(ndim / ncols)
+        # ------------------------------------------------------------------ chain
+        try:
+            chain = sampler.get_chain()              # (n_steps, n_walkers, n_dim)  emcee ≥ 3
+        except AttributeError:                       # emcee < 3
+            chain = np.swapaxes(sampler.chain, 0, 1)  # (n_steps, n_walkers, n_dim)
 
-        # Extract parameter labels
-        labels = []
-        for model_component in self.model.model_components:
-            for parameter in model_component.params.keys():
-                if model_component.params[parameter].vary:
-                    labels.append(model_component.name + "_" + parameter)
+        n_steps, n_walkers, n_dim = chain.shape
 
-        plt.figure(figsize=(14, nrows * 2.5))
+        # --------------------------------------------------------- build label list
+        if labels_override is None:
+            labels: list[str] = []
+            for comp in self.model.model_components:
+                for pname, par in comp.params.items():
+                    if par.vary:
+                        labels.append(f"{comp.name}_{pname}")
+        else:
+            if len(labels_override) != n_dim:
+                raise ValueError(
+                    f"labels_override has {len(labels_override)} items "
+                    f"but the chain contains {n_dim} parameters."
+                )
+            labels = labels_override
 
-        for h in range(ndim):
-            plt.subplot(nrows, ncols, h + 1)
-            plt.plot(sampler.chain[:, :, h].T, alpha=0.7)
-            plt.title(labels[h], fontsize=12)
-            plt.xlabel("Steps", fontsize=10)
-            plt.ylabel("Value", fontsize=10)
+        # ------------------------------------------------------------- make figure
+        n_rows = int(np.ceil(n_dim / n_cols))
+        fig_w  = n_cols * fig_width_per_col
+        fig_h  = n_rows * fig_height_per_row
+
+        plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+
+        for h in range(n_dim):
+            ax = plt.subplot(n_rows, n_cols, h + 1)
+            ax.plot(chain[:, :, h], alpha=alpha)
+            ax.set_title(labels[h], fontsize=10)
+            ax.set_xlabel("Step",  fontsize=8)
+            ax.set_ylabel("Value", fontsize=8)
+            ax.tick_params(axis="both", which="major", labelsize=8)
 
         plt.tight_layout()
 
+        # -------------------------------------------------------------- save/show
         if save_plots:
-            plt.savefig(self.data.object_name + "_trace_" + str(outsuffix) + ".png")
+            fname = f"{self.data.object_name}_trace_{outfile_tag}.png"
+            plt.savefig(fname, dpi=dpi, bbox_inches="tight")
         if show:
             plt.show()
+
         plt.close()
 
 
-    def corner_plot(self, samples, outsuffix="", save_plots=False, show=False):
+
+    def corner_plot(self, samples, outfile_tag="", save_plots=False, show=False):
         """
-        Generates a corner plot for the MCMC samples with median markers and cross lines.
+        Generate a corner (pairwise) plot of MCMC samples with median markers.
 
         Parameters:
-            samples (np.ndarray): Array of MCMC samples.
-            outsuffix (str): Suffix for the output filename.
-            save_plots (bool): If True, saves the plot to a file.
-            show (bool): If True, displays the plot.
-
+            samples (np.ndarray): Posterior samples.
+            outfile_tag (str): Suffix for output file.
+            save_plots (bool): Save the figure if True.
+            show (bool): Display the figure if True.
         Returns:
-            None
+            matplotlib.figure.Figure: Generated corner plot.
         """
         labels = []
         for model_component in self.model.model_components:
@@ -1557,23 +1977,22 @@ class fit:
         if show:
             plt.show()
         if save_plots:
-            fig.savefig(self.data.object_name + "_corner_" + str(outsuffix) + ".png")
+            fig.savefig(self.data.object_name + "_corner_" + str(outfile_tag) + ".png")
         plt.close()
         return fig
 
     def clear_emcee_sample(self, samples, threshold=0, order=0, clear_count=np.inf, inplace=False):
         """
-        Filters out problematic samples from an emcee sample array using histogram-based criteria.
+        Filter MCMC samples by removing outliers in histogram space.
 
         Parameters:
-            samples (np.ndarray): Raw sample array from emcee.
-            threshold (float): Threshold multiplier for histogram bin counts.
-            order (int): Order in which to process columns (0 for forward, 1 for reverse).
-            clear_count (int): Maximum number of iterations for clearing.
-            inplace (bool): Changes fitted_model with newly created samples when True.
-            
+            samples (np.ndarray): Raw MCMC samples.
+            threshold (float): Count ratio threshold.
+            order (int): Direction of column iteration (0 or 1).
+            clear_count (int): Max clearing iterations.
+            inplace (bool): Update fitted_model if True.
         Returns:
-            np.ndarray: The filtered sample array.
+            np.ndarray: Filtered MCMC samples.
         """
         samples2 = samples
 
@@ -1629,166 +2048,250 @@ class fit:
 
         return samples2
     
-    def find_orbital_parameters(self, inc, inc_std, m1, m1_std, m2, m2_std):
+    def find_orbital_parameters(self,
+                                inc: float, inc_std: float,
+                                m1: float,  m1_std: float,
+                                m2: float,  m2_std: float) -> "pd.DataFrame":
         """
-        Calculates orbital parameters (e.g., semi-major axis, mass function) using an external calculator.
+        Compute orbital parameters for each model component (LiTE‐based or raw)
+        and return them as a tidy pandas DataFrame with nominal values and uncertainties.
 
         Parameters:
-            inc (float): Inclination angle.
-            inc_std (float): Standard deviation of the inclination.
+            inc (float): Inclination angle in degrees.
+            inc_std (float): Uncertainty of inclination.
             m1 (float): Primary mass.
-            m1_std (float): Standard deviation of the primary mass.
-            m2 (float): Companion mass.
-            m2_std (float): Standard deviation of the companion mass.
+            m1_std (float): Uncertainty of primary mass.
+            m2 (float): Secondary mass.
+            m2_std (float): Uncertainty of secondary mass.
 
         Returns:
-            dict: A dictionary containing various calculated orbital parameters.
+            pd.DataFrame: MultiIndex (component, parameter) with columns
+                        ['value', 'uncertainty'].
         """
-        import orbit_param_calculator
+        import numpy as np
+        import pandas as pd
         from uncertainties import ufloat
-        if not hasattr(self, "fitted_model"):
-            raise ValueError("No fitted model available. Please fit the model first.")
-        dict_op = {}
-        dp = 0
-        dpstderr = 0
-        self.fitted_model.Ref_period = self.data.Ref_period
-        self.fitted_model.Ref_mintime = self.data.Ref_mintime
-        
-        for component in self.fitted_model.model_components:
-            if hasattr(component, "dP"):
-                dp = getattr(component, "dP").value
-                dpstderr = getattr(component, "dP").std
-            if hasattr(component, "T_LiTE"):
-                # Convert parameters to the main units.
-                P_LiTE_unit_fixed = _unit_conv(
-                    getattr(component, "P_LiTE").value,
-                    getattr(component, "P_LiTE").unit,
-                    component._main_units["P_LiTE"],
-                    ref_period=self.data.Ref_period, ref_mintime=self.data.Ref_mintime, parameter_name="P_LiTE",
-                    JD_convertable=getattr(component, "P_LiTE").JD_convertable
-                )
-                P_LiTE_std_unit_fixed = _unit_conv(
-                    getattr(component, "P_LiTE").std,
-                    getattr(component, "P_LiTE").unit,
-                    component._main_units["P_LiTE"],
-                    ref_period=self.data.Ref_period, ref_mintime=self.data.Ref_mintime, parameter_name="P_LiTE",
-                    JD_convertable=getattr(component, "P_LiTE").JD_convertable
-                )
-                amp_unit_fixed = _unit_conv(
-                    getattr(component, "amp").value,
-                    getattr(component, "amp").unit,
-                    component._main_units["amp"],
-                    ref_period=self.data.Ref_period, ref_mintime=self.data.Ref_mintime, parameter_name="amp",
-                    JD_convertable=getattr(component, "amp").JD_convertable
-                )
-                amp_std_unit_fixed = _unit_conv(
-                    getattr(component, "amp").std,
-                    getattr(component, "amp").unit,
-                    component._main_units["amp"],
-                    ref_period=self.data.Ref_period, ref_mintime=self.data.Ref_mintime, parameter_name="amp",
-                    JD_convertable=getattr(component, "amp").JD_convertable
-                )
-                omega_unit_fixed = _unit_conv(
-                    getattr(component, "omega").value,
-                    getattr(component, "omega").unit,
-                    component._main_units["omega"],
-                    ref_period=self.data.Ref_period, ref_mintime=self.data.Ref_mintime, parameter_name="omega",
-                    JD_convertable=getattr(component, "omega").JD_convertable
-                )
-                omega_std_unit_fixed = _unit_conv(
-                    getattr(component, "omega").std,
-                    getattr(component, "omega").unit,
-                    component._main_units["omega"],
-                    ref_period=self.data.Ref_period, ref_mintime=self.data.Ref_mintime, parameter_name="omega",
-                    JD_convertable=getattr(component, "omega").JD_convertable
-                )
-                
-                # Calculate orbital parameters using the external orbit_param_calculator.
-                period3_yr1 = orbit_param_calculator.period_in_years(
-                    P_LiTE_unit_fixed, P_LiTE_std_unit_fixed, self.data.Ref_period + dp, dpstderr
-                )
-                sma12sini1 = orbit_param_calculator.sma12sini(
-                    amp_unit_fixed, amp_std_unit_fixed, component.e.value, component.e.std, 
-                    omega_unit_fixed, omega_std_unit_fixed
-                )
-                sma121 = orbit_param_calculator.sma12(
-                    sma12sini1.nominal_value, sma12sini1.std_dev, inc, inc_std
-                )
-                mass_func1 = orbit_param_calculator.mass_func(
-                    period3_yr1.nominal_value, period3_yr1.std_dev, 
-                    sma12sini1.nominal_value, sma12sini1.std_dev
-                )
-                mass31sini = orbit_param_calculator.mass3(
-                    mass_func1.nominal_value, mass_func1.std_dev, m1, m1_std, m2, m2_std
-                )
-                mass31 = orbit_param_calculator.mass3(
-                    mass_func1.nominal_value, mass_func1.std_dev, m1, m1_std, m2, m2_std, inc, inc_std
-                )
-                mass31_mjup = mass31 * 1047.56
-                sma121 = orbit_param_calculator.sma12(
-                    sma12sini1.nominal_value, sma12sini1.std_dev, inc, inc_std
-                )
-                sma31 = orbit_param_calculator.sma3(
-                    sma121.nominal_value, sma121.std_dev, m1, m1_std, m2, m2_std, 
-                    mass31.nominal_value, mass31.std_dev
-                )
+        import orbit_param_calculator
 
-                from uncertainties import ufloat
-                P_LiTE = ufloat(component.P_LiTE.value, component.P_LiTE.std)
-                Ref_period = ufloat(self.data.Ref_period, dpstderr)
-                Ref_mintime = ufloat(self.data.Ref_mintime, 0)
-                p_day = P_LiTE * Ref_period
-                p_year = p_day / 365.242199
-                T_LiTE = component.T_LiTE.value * Ref_period + Ref_mintime
+        # conversion constants
+        DAY2SEC   = 86400.0
+        JUPITER_M = 1047.56
 
-                # Populate the dictionary with orbital parameters.
-                dict_op[f"a12_sini{component.name}"] = sma12sini1
-                dict_op[f"a12{component.name}"] = sma121
-                dict_op[f"m_sini_msol{component.name}"] = mass31sini
-                dict_op[f"m_sini_mjup{component.name}"] = mass31sini * 1047.56
-                dict_op[f"m_msol{component.name}"] = mass31
-                dict_op[f"m_jup{component.name}"] = mass31_mjup
-                dict_op[f"a_AU{component.name}"] = sma31
-                dict_op[f"p_day{component.name}"] = p_day
-                dict_op[f"p_year{component.name}"] = p_year
-                dict_op[f"ecc{component.name}"] = ufloat(component.e.value, component.e.std)
-                dict_op[f"omega{component.name}"] = ufloat(component.omega.value, component.omega.std)
-                dict_op[f"T_LiTE{component.name}"] = T_LiTE
+        # wrap global inputs as ufloats
+        inc_uf = ufloat(np.deg2rad(inc), np.deg2rad(inc_std))
+        m1_uf  = ufloat(m1, m1_std)
+        m2_uf  = ufloat(m2, m2_std)
+        RefP   = ufloat(self.data.Ref_period, 0.0)
 
-        return dict_op
+        raw_results = {}
+
+        for comp in self.fitted_model.model_components:
+            name = comp.name
+
+            if hasattr(comp, "amp"):
+                # — LiTE‐based calculation path —
+
+                # 1) convert units for P_LiTE, amp, omega, T_LiTE
+                P_val = _unit_conv(comp.P_LiTE.value, comp.P_LiTE.unit,
+                                comp._main_units["P_LiTE"],
+                                ref_period=self.data.Ref_period,
+                                ref_mintime=self.data.Ref_mintime,
+                                parameter_name="P_LiTE",
+                                JD_convertable=comp.P_LiTE.JD_convertable)
+                P_std = _unit_conv(comp.P_LiTE.std,  comp.P_LiTE.unit,
+                                comp._main_units["P_LiTE"],
+                                ref_period=self.data.Ref_period,
+                                ref_mintime=self.data.Ref_mintime,
+                                parameter_name="P_LiTE",
+                                JD_convertable=comp.P_LiTE.JD_convertable)
+
+                amp_val = _unit_conv(comp.amp.value, comp.amp.unit,
+                                    comp._main_units["amp"],
+                                    ref_period=self.data.Ref_period,
+                                    ref_mintime=self.data.Ref_mintime,
+                                    parameter_name="amp",
+                                    JD_convertable=comp.amp.JD_convertable)
+                amp_std = _unit_conv(comp.amp.std,  comp.amp.unit,
+                                    comp._main_units["amp"],
+                                    ref_period=self.data.Ref_period,
+                                    ref_mintime=self.data.Ref_mintime,
+                                    parameter_name="amp",
+                                    JD_convertable=comp.amp.JD_convertable)
+
+                omega_val = _unit_conv(comp.omega.value, comp.omega.unit,
+                                    comp._main_units["omega"],
+                                    ref_period=self.data.Ref_period,
+                                    ref_mintime=self.data.Ref_mintime,
+                                    parameter_name="omega",
+                                    JD_convertable=comp.omega.JD_convertable)
+                omega_std = _unit_conv(comp.omega.std,  comp.omega.unit,
+                                    comp._main_units["omega"],
+                                    ref_period=self.data.Ref_period,
+                                    ref_mintime=self.data.Ref_mintime,
+                                    parameter_name="omega",
+                                    JD_convertable=comp.omega.JD_convertable)
+
+                T_val = _unit_conv(comp.T_LiTE.value, comp.T_LiTE.unit,
+                                comp._main_units["T_LiTE"],
+                                ref_period=self.data.Ref_period,
+                                ref_mintime=self.data.Ref_mintime,
+                                parameter_name="T_LiTE",
+                                JD_convertable=comp.T_LiTE.JD_convertable)
+                T_std = _unit_conv(comp.T_LiTE.std,  comp.T_LiTE.unit,
+                                comp._main_units["T_LiTE"],
+                                ref_period=self.data.Ref_period,
+                                ref_mintime=self.data.Ref_mintime,
+                                parameter_name="T_LiTE",
+                                JD_convertable=comp.T_LiTE.JD_convertable)
+
+                ecc_uf = ufloat(comp.e.value, comp.e.std)
+
+                # 2) wrap in ufloats
+                P_ratio  = ufloat(P_val,   P_std)
+                amp_days = ufloat(amp_val, amp_std)
+                omega_uf = ufloat(np.deg2rad(omega_val), np.deg2rad(omega_std))
+                T_uf     = ufloat(T_val,   T_std)
+                T_BJD    = T_uf * self.data.Ref_period + self.data.Ref_mintime
+
+                # 3) period conversions
+                P_days = P_ratio * RefP
+                P_yr   = orbit_param_calculator.period_in_years(P_ratio, RefP)
+
+                # 4) semi-major axes
+                a12sini_au = orbit_param_calculator.a12sini(amp_days, ecc_uf, omega_uf)
+                a12_au     = orbit_param_calculator.a12(a12sini_au, inc_uf)
+
+                # 5) mass function & tertiary mass
+                f_mass      = orbit_param_calculator.mass_func(P_yr, a12sini_au)
+                m3sini3     = orbit_param_calculator.m3sini3(f_mass, m1_uf, m2_uf)
+                m3sini3_jup = m3sini3 * JUPITER_M
+
+                # 6) outer semi-major axis projection
+                a3sini3 = orbit_param_calculator.a3sini3(a12_au, m1_uf, m2_uf, m3sini3)
+
+                # 7) collect results in a dict
+                raw_results[name] = {
+                    "P_days"       : P_days,
+                    "P_years"      : P_yr,
+                    "amp_days"     : amp_days,
+                    "amp_seconds"  : amp_days * DAY2SEC,
+                    "eccentricity" : ecc_uf,
+                    "omega_deg"    : ufloat(omega_val, omega_std),
+                    "a12sini_AU"   : a12sini_au,
+                    "a12_AU"       : a12_au,
+                    "f_mass"       : f_mass,
+                    "m3sini_msol"  : m3sini3,
+                    "m3sini_mjup"  : m3sini3_jup,
+                    "a3sini_AU"    : a3sini3,
+                    "T_LiTE"       : T_BJD
+                }
+
+            else:
+                # — No amp: just dump raw parameters —
+                raw_results[name] = {
+                    pname: (param.value if hasattr(param, "value") else param)
+                    for pname, param in comp.params.items()
+                }
+
+        # Flatten into a pandas DataFrame
+        rows = []
+        for comp_name, params in raw_results.items():
+            for pname, pval in params.items():
+                if hasattr(pval, "nominal_value") and hasattr(pval, "std_dev"):
+                    nominal = pval.nominal_value
+                    uncert  = pval.std_dev
+                else:
+                    nominal = pval
+                    uncert  = None
+                rows.append({
+                    "component":   comp_name,
+                    "parameter":   pname,
+                    "value":       nominal,
+                    "uncertainty": uncert
+                })
+
+        df = pd.DataFrame(rows)
+        df.set_index(["component", "parameter"], inplace=True)
+        return df
+
 
     def log_likelihood(self, variable_params, m1, m2, inc):
+        """
+        Compute the log-likelihood of the data given model parameters.
+
+        Parameters:
+            variable_params (array-like): Free parameters for model.
+            m1 (float): Primary mass.
+            m2 (float): Secondary mass.
+            inc (float): Inclination angle.
+
+        Returns:
+            float: Log-likelihood value.
+        """
         observed_oc = self.data.OC
         observed_errors = self.data.Errors
-        simulated_oc = self.total_oc_delay(variable_params, m1, m2, inc, Ecorr=None, Mintimes=None)
+        simulated_oc = self.total_oc_delay(variable_params, m1, m2, inc, Ecorr=None, mintimes_in_data=True)
         residuals = observed_oc - simulated_oc
         return -0.5 * np.sum(((residuals)**2 / observed_errors**2) + np.log(observed_errors**2))
 
     def log_prior(self, variable_params):
+        """
+        Evaluate the log-prior probability of the parameters.
+
+        Parameters:
+            variable_params (array-like): Free parameters for model.
+
+        Returns:
+            float: Log-prior (0 if uniform within bounds, -inf otherwise).
+        """
         ln_sum = 0.0
         param_index = 0
         for component in self.model.model_components:
             for param_name, param_obj in component.params.items():
                 if param_obj.vary:
                     param_value = variable_params[param_index]
-                    if (param_obj.min is not None and param_value < param_obj.min) or \
-                       (param_obj.max is not None and param_value > param_obj.max):
+                    if (param_obj.min is not None and param_value < param_obj.min) or (param_obj.max is not None and param_value > param_obj.max):
                         return -np.inf
-                    ln_sum += fit.gaussian(param_value, param_obj.value, param_obj.std / 2.0)
+                    if self.prob_prior:
+                        ln_sum += fit.gaussian(param_value, param_obj.value, param_obj.std / 2.0)
                     param_index += 1
-        if self.prob_prior:
-            return ln_sum
-        else:
-            return 0
+        return ln_sum
 
     def log_prob(self, variable_params, m1, m2, inc):
+        """
+        Compute the log-posterior as sum of log_prior and log_likelihood.
+
+        Parameters:
+            variable_params (array-like): Free parameters for model.
+            m1 (float): Primary mass.
+            m2 (float): Secondary mass.
+            inc (float): Inclination angle.
+
+        Returns:
+            float: Log-posterior probability.
+        """
         lp = self.log_prior(variable_params)
         if not np.isfinite(lp):
             return -np.inf
         likelihood = self.log_likelihood(variable_params, m1, m2, inc)
         return lp + likelihood if np.isfinite(likelihood) else -np.inf      
 
-    def total_oc_delay(self, variable_params, m1, m2, inc, Ecorr=None, Mintimes=None, fix_units_first=False):
+    def total_oc_delay(self, variable_params, m1, m2, inc, Ecorr=None, fix_units_first=False, mintimes_in_data=False):
+        """
+        Calculate total O-C delay contributions from all model components.
+
+        Parameters:
+            variable_params (array-like): List of free parameters.
+            m1 (float): Primary mass.
+            m2 (float): Secondary mass.
+            inc (float): Inclination angle.
+            Ecorr (np.ndarray, optional): Epoch corrections.
+            Mintimes (np.ndarray, optional): Observation times of minima.
+            fix_units_first (bool): If True, apply unit conversion first.
+
+        Returns:
+            np.ndarray: Total O-C delay values.
+        """
         if fix_units_first:
             model = self.model.fix_units()
             converted_variable_params = []
@@ -1813,10 +2316,10 @@ class fit:
             model = self.model
 
         Ecorr = Ecorr if Ecorr is not None else self.data.Ecorr
-        Mintimes = Mintimes if Mintimes is not None else self.data.Mintimes
         simulated_oc = 0
         param_index = 0
         lite_params = []
+        lin_exists = False
         for component in model.model_components:
             if isinstance(component, LiTE_abspar):
                 lite_param_set = {}
@@ -1830,13 +2333,33 @@ class fit:
                 lite_params.append(lite_param_set)
             else:
                 params, param_index = self._extract_component_params(component, variable_params, param_index)
+                if isinstance(component, Lin):
+                    dP, dT = params
+                    lin_exists = True
                 simulated_oc += component.individual_model(Ecorr, *params)
 
+        if not lin_exists:
+            dP = dT = 0
         if lite_params:
+            if mintimes_in_data:
+                Mintimes = self.data.Mintimes
+            else:
+                Mintimes = Ecorr * (self.data.Ref_period + dP) + (self.data.Ref_mintime + dT)
             simulated_oc += self.simulate_oc_delay_lite(m1, m2, inc, lite_params, Mintimes)
         return simulated_oc
 
     def _extract_component_params(self, component, variable_params, start_index):
+        """
+        Internal: Extract a slice of variable_params for a specific component.
+
+        Parameters:
+            component (object): Model component instance.
+            variable_params (array-like): Flat list of all free parameters.
+            start_index (int): Starting index in variable_params for this component.
+
+        Returns:
+            tuple: (params_list, next_index) updated index after extraction.
+        """
         params = []
         for param_name, param_obj in component.params.items():
             param_value = variable_params[start_index] if param_obj.vary else param_obj.value
@@ -1846,6 +2369,19 @@ class fit:
         return params, start_index
 
     def simulate_oc_delay_lite(self, m1, m2, system_inclination_deg, lite_params, mintimes):
+        """
+        Compute OC delays using analytical LiTE formula for a single component.
+
+        Parameters:
+            m1 (float): Primary mass.
+            m2 (float): Secondary mass.
+            system_inclination_deg (float): System inclination in degrees.
+            lite_params (dict): Parameters for LiTE effect.
+            mintimes (np.ndarray): Observation times of minima.
+
+        Returns:
+            np.ndarray: LiTE-based O-C delays.
+        """
         # Extract parameters, ensuring lite_params is a list of dictionaries
         times_of_p = [p.get('T_LiTE', Parameter(0)) for p in lite_params]
         periods = [p.get('P_LiTE', Parameter(0)) for p in lite_params]
@@ -1853,29 +2389,57 @@ class fit:
         omegas = [p.get('omega', Parameter(0)) for p in lite_params]
         masses = [p.get('mass', Parameter(0)) for p in lite_params]
         incs = [p.get('inc', Parameter(0)) for p in lite_params]
-        return simulate_oc_delay(m1, m2, system_inclination_deg, times_of_p, periods, eccs, omegas, masses, incs, mintimes)
+        return simulate_oc_delay(m1, m2, system_inclination_deg, times_of_p, periods, eccs, omegas, masses, incs, mintimes, integrator=self.integrator)
 
     @staticmethod
     def gaussian(p, mu, sigma):
+        """
+        Compute Gaussian probability density function for value p.
+
+        Parameters:
+            p (float or array-like): Data value(s).
+            mu (float): Mean of Gaussian.
+            sigma (float): Standard deviation of Gaussian.
+
+        Returns:
+            float or np.ndarray: Probability density.
+        """
         res = np.log(1.0 / (np.sqrt(2 * np.pi) * sigma)) - 0.5 * (p - mu)**2 / sigma**2
-        if np.isnan(res):
-            print("NAN", p, mu, sigma)
         return res
 
 
-    def fit_model_prob(self, walker=20, steps=100, burn_in=0, threads=4, std_scale=0.05, 
-                    create_sample_file=False, create_percentile_file=False, trace_plot=True, 
-                    corner_plot=True, sample_plot=True, save_plots=False, show_plots=True, 
-                    prob_prior=True, return_samples=True, return_sampler=False, multiprocessing=True):
+    def fit_model_prob(self, walker=20, steps=300, burn_in=0, threads=4, std_scale=0.05, 
+                    create_sample_file=False, trace_plot=True, 
+                    corner_plot=True, fit_plot=True, save_plots=False, show_plots=True, 
+                    prob_prior=True, return_samples=True, return_sampler=False, multiprocessing=True, integrator="IAS15"):
         """
-        Fits the model using MCMC sampling with the emcee package.
+        Run MCMC sampling with emcee to approximate the posterior distribution of model parameters.
 
-        This method sets up the initial positions, runs the sampler, and creates a new model from
-        the posterior samples. It also saves sample and percentile files if requested and generates
-        diagnostic plots.
+        Parameters:
+            walker (int): Number of walkers (chains) in the ensemble.
+            steps (int): Total number of steps (iterations) to run per walker.
+            burn_in (int): Number of initial samples to discard from each chain as burn-in.
+            threads (int): Number of parallel threads to use for sampling.
+            std_scale (float): Fractional scale for dispersing initial walker positions around the least-squares solution.
+            create_sample_file (bool): If True, write the post-burn-in samples to a text file.
+            trace_plot (bool): If True, generate and optionally save/display the trace diagnostic plot.
+            corner_plot (bool): If True, generate and optionally save/display the corner plot of the posterior samples.
+            fit_plot (bool): If True, plot the sampled posterior distributions over the data.
+            save_plots (bool): If True, save any generated plots to disk using the configured outfile_tag.
+            show_plots (bool): If True, display plots interactively during execution.
+            prob_prior (bool): If True, include prior probability in the log-posterior calculation.
+            return_samples (bool): If True, return the flattened sample array.
+            return_sampler (bool): If True, return the emcee sampler instance instead of or in addition to samples.
+            multiprocessing (bool): If True, use multiprocessing Pool for parallel sampling.
+            integrator (str or None): Name of N-body integrator to pass to simulate_oc_delay, or IAS15 to use default. 
+                WHFast recommended for non close encounters.
+                IAS15 recommended for close encounters.
+                Mercurius recommended for complicated.
+                'https://rebound.readthedocs.io/en/latest/integrators/' for better info
 
         Returns:
-            np.ndarray: The MCMC samples (as a flat array after burn-in) converted to the specified unit.
+            np.ndarray or tuple: By default returns the flattened samples array;
+            if return_sampler is True, returns (samples, sampler) instead.
         """
         import copy
         import os
@@ -1889,6 +2453,8 @@ class fit:
         fit2.model.Ref_period = fit2.data.Ref_period
         fit2.model.Ref_mintime = fit2.data.Ref_mintime
         fit2.model = fit2.model.fix_units()
+
+        fit2.integrator = integrator
 
         if burn_in > steps:
             raise ValueError("Burn-in value cannot be greater than the number of steps.")
@@ -1929,7 +2495,7 @@ class fit:
                 sampler = emcee.EnsembleSampler(nwalkers, ndim, fit2.log_prob, args=(m1, m2, inc), pool=pool)
                 sampler.run_mcmc(initial_positions, steps, progress=True)
         else:
-            sampler = emcee.EnsembleSampler(nwalkers, ndim, fit2.log_prob, args=(m1, m2, inc))
+            sampler = emcee.EnsembleSampler(nwalkers, ndim, fit2.log_prob, args=(m1, m2, inc), threads=threads)
             sampler.run_mcmc(initial_positions, steps, progress=True)
 
         # Get the full sample chain.
@@ -1978,34 +2544,29 @@ class fit:
 
         # Build a unique filename suffix for outputs.
         identifier = "".join([component.name for component in fit2.model.model_components])
-        outsuffix = f"{nwalkers}_{steps}_{identifier}"
-        base_filename = f"{fit2.data.object_name}_prios_{outsuffix}.out"
+        outfile_tag = f"{nwalkers}_{steps}_{identifier}"
+        base_filename = f"{fit2.data.object_name}_prios_{outfile_tag}.out"
         filename = base_filename
         counter = 1
         while os.path.exists(filename):
             filename = f"{base_filename}_{counter}.out"
             counter += 1
-        outsuffix = f"{nwalkers}_{steps}_{identifier}_{counter}"
+        outfile_tag = f"{nwalkers}_{steps}_{identifier}_{counter}"
 
         if create_sample_file:
-            sample_filename = f"{fit2.data.object_name}_emcee_samples_{outsuffix}.out"
+            sample_filename = f"{fit2.data.object_name}_emcee_samples_{outfile_tag}.out"
             print(f"Saving MCMC samples to {sample_filename}...")
             np.savetxt(sample_filename, samples, delimiter=" ", fmt="%.8e")
 
         results_mcmc = list(map(lambda v: (v[1], v[2] - v[1], v[1] - v[0]),
                                 zip(*np.percentile(samples, [16, 50, 84], axis=0))))
 
-        if create_percentile_file:
-            percentile_filename = f"{fit2.data.object_name}_emcee_percentiles_{outsuffix}.out"
-            print(f"Saving percentile results to {percentile_filename}...")
-            np.savetxt(percentile_filename, results_mcmc, delimiter=" ", fmt="%.8e")
-
         # Generate diagnostic plots if requested.
         if trace_plot:
-            self.trace_plot(sampler, outsuffix="filtered", save_plots=save_plots, show=show_plots)
+            self.trace_plot(sampler, outfile_tag="filtered", save_plots=save_plots, show=show_plots)
         if corner_plot:
-            self.corner_plot(samples, outsuffix="filtered", save_plots=save_plots, show=show_plots)
-        if sample_plot:
+            self.corner_plot(samples, outfile_tag="filtered", save_plots=save_plots, show=show_plots)
+        if fit_plot:
             self.plot(samples=samples, show=True)
 
         plt.show()
@@ -2020,361 +2581,352 @@ class fit:
 
     def _initialize_sampling_params(self, walker, std_scale):
         """
-        Prepares initial positions for the MCMC sampler.
+        Internal: Prepare initial sampler positions and labels for MCMC.
 
         Parameters:
             walker (int): Number of walkers.
-            std_scale (float): Scale factor for the standard deviation of initial positions.
+            std_scale (float): Scale factor for dispersing initial positions.
 
         Returns:
-            tuple: (initial_positions, nwalkers, ndim)
+            tuple: (initial_positions, walker_count, dim_count)
         """
-        initial_params, initial_stds, min_bounds, max_bounds = [], [], [], []
+        # Gather parameter centres, scaled sigmas, and hard bounds
+        centers, scales, min_bounds, max_bounds = [], [], [], []
         for component in self.model.model_components:
             for param_obj in component.params.values():
                 if param_obj.vary:
-                    initial_params.append(param_obj.value)
-                    initial_stds.append((param_obj.std or 1e-4) * std_scale)
-                    min_bounds.append(param_obj.min or -np.inf)
-                    max_bounds.append(param_obj.max or np.inf)
-        
-        nwalkers, ndim = walker, len(initial_params)
-        initial_positions = np.clip(
-            np.random.normal(initial_params, initial_stds, (nwalkers, ndim)),
-            min_bounds, max_bounds
+                    centers.append(param_obj.value)
+                    # fallback to a small value if std is None
+                    scales.append((param_obj.std or 1e-4) * std_scale)
+                    min_bounds.append(param_obj.min if param_obj.min is not None else -np.inf)
+                    max_bounds.append(param_obj.max if param_obj.max is not None else np.inf)
+
+        walker_count = walker
+        dim_count = len(centers)
+
+        # Compute the uniform sampling window for each dimension
+        centers = np.array(centers)
+        scales = np.array(scales)
+        min_bounds = np.array(min_bounds)
+        max_bounds = np.array(max_bounds)
+
+        # Low end = max(hard_min, center - scale), high end = min(hard_max, center + scale)
+        low = np.maximum(min_bounds, centers - scales)
+        high = np.minimum(max_bounds, centers + scales)
+
+        # Draw uniformly in [low, high] for each walker and dimension
+        initial_positions = np.random.uniform(
+            low=low, 
+            high=high, 
+            size=(walker_count, dim_count)
         )
-        return initial_positions, nwalkers, ndim
+
+        return initial_positions, walker_count, dim_count
             
-    def plot_orbit_gif(self, output_file="orbit.gif", time_count=1000, real_inc=False):
+    def plot_orbit_gif(self,
+                    output_file="orbit.gif",
+                    time_count=1000,
+                    real_inc=False,
+                    epochs=None,
+                    speed=1,
+                    show_oc=True,
+                    show_data=True):
         """
-        Plots the system's orbits and creates a GIF animation with an accompanying light-time effect graph.
+        Generate and save an animated GIF visualizing orbital motion with persistent trails,
+        at adjustable playback speed, and optional O–C subplot and observed-data overlay.
 
         Parameters:
-            output_file (str): Filename for the output GIF.
-            time_count (int): Number of time steps for the animation.
-            real_inc (bool): If True, uses real inclinations for orbit animation; otherwise uses adjusted values.
-
-        Returns:
-            None
+            output_file (str): Filename for saved GIF.
+            time_count (int): Number of frames/time steps.
+            real_inc (bool): Use real inclination if True.
+            epochs (array-like): Optional manual epochs array.
+            speed (float): Playback speed multiplier (1 = normal, 2 = 2× faster, etc.).
+            show_oc (bool): If True, include the O–C subplot; otherwise omit it.
+            show_data (bool): If True and show_oc=True, plot the observed O–C data points.
         """
+        import copy
+        import numpy as np
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import matplotlib.animation as animation
+
+        if speed <= 0:
+            raise ValueError("`speed` must be > 0")
+
+        # --- prepare a clean copy of the fit ---
         fit2 = copy.deepcopy(self)
-        fit2.model.Ref_period = fit2.data.Ref_period
+        fit2.model.Ref_period  = fit2.data.Ref_period
         fit2.model.Ref_mintime = fit2.data.Ref_mintime
-        fit2.model = fit2.model.fix_units()
-        
-        # Extract system parameters.
-        m1 = fit2.data.m1
-        m2 = fit2.data.m2
-        system_inclination_deg = fit2.data.inc
 
-        # Extract orbital parameters from LiTE_abspar components.
-        times_of_p = []
-        periods = []
-        eccentricities = []
-        omegas_deg = []
-        masses = []
-        incs_real = []  # Real inclinations.
-        incs_used = []  # Inclinations for animation.
-        for component in fit2.model.model_components:
-            if isinstance(component, LiTE_abspar):
-                times_of_p.append(component.params["T_LiTE"].value)
-                periods.append(component.params["P_LiTE"].value)
-                eccentricities.append(component.params["ecc"].value)
-                omegas_deg.append(component.params["omega"].value)
-                masses.append(component.params["mass"].value)
-                incs_real.append(component.params["inc"].value)
-                incs_used.append(component.params["inc"].value if real_inc else 0)
+        # Unwrap masses & inclination
+        m1 = getattr(fit2.data.m1,  "value", fit2.data.m1)
+        m2 = getattr(fit2.data.m2,  "value", fit2.data.m2)
+        system_inc = getattr(fit2.data.inc, "value", fit2.data.inc)
 
-        # Create a new mintimes array for smooth animation.
-        original_mintimes = fit2.data.Mintimes
-        mintimes = np.linspace(min(original_mintimes), max(original_mintimes), time_count)
+        # Extract LiTE component parameters
+        times_of_p, periods, eccs, omegas, masses, incs_used = [], [], [], [], [], []
+        for comp in fit2.model.model_components:
+            if isinstance(comp, LiTE_abspar):
+                p = comp.params
+                times_of_p.append(p["T_LiTE"].value)
+                periods.append(    p["P_LiTE"].value)
+                eccs.append(       p["ecc"].value)
+                omegas.append(     p["omega"].value)
+                masses.append(     p["mass"].value)
+                incs_used.append(  p["inc"].value if real_inc else 0.0)
 
-        # Prepare a copy of the current fit instance for O-C calculation.
+        # Build smooth mintimes
+        orig_mt = fit2.data.Mintimes
+        mintimes = np.linspace(orig_mt.min(), orig_mt.max(), time_count)
+
+        # Reset fit2 for O–C
         fit2 = copy.deepcopy(self)
         fit2.data.df = pd.DataFrame()
         fit2.data.Mintimes = mintimes
-        fit2.data.Ecorr = np.linspace(min(fit2.data.Ecorr), max(fit2.data.Ecorr), time_count)
+        if epochs is None:
+            fit2.data.Ecorr = np.linspace(
+                fit2.data.Ecorr.min(), fit2.data.Ecorr.max(), time_count
+            )
+        else:
+            fit2.data.Ecorr = np.array(epochs)
         fit2.model.epochs = fit2.data.Ecorr
 
-        # Freeze parameters for the simulation.
-        for model_component in fit2.model.model_components:
-            for param in model_component.params.values():
+        # Freeze all parameters
+        for mc in fit2.model.model_components:
+            for param in mc.params.values():
                 param.vary = False
 
-        variable_params = []
-        total_oc_delay = fit2.total_oc_delay(variable_params, m1, m2, system_inclination_deg)
-        plt.plot(fit2.data.Ecorr, total_oc_delay)
+        # Compute model O–C delay
+        total_oc_delay = fit2.total_oc_delay([], m1, m2,
+                                            system_inc,
+                                            Ecorr=fit2.data.Ecorr)
 
-        # Calculate positions for animation using simulate_oc_delay.
+        # Unwrap linear terms
+        dT = dP = 0.0
+        for mc in fit2.model.model_components:
+            if isinstance(mc, Lin):
+                dT = getattr(mc.dT, "value", mc.dT)
+                dP = getattr(mc.dP, "value", mc.dP)
+        mintimes = (fit2.data.Ecorr * (self.data.Ref_period + dP)
+                + (self.data.Ref_mintime + dT))
+
+        # Simulate positions
         _, positions = simulate_oc_delay(
-            m1=m1,
-            m2=m2,
-            system_inclination_deg=0 if not real_inc else system_inclination_deg,
+            m1=m1, m2=m2,
+            system_inclination_deg=(system_inc if real_inc else 0.0),
             times_of_p=times_of_p,
-            periods=periods,
-            eccentricities=eccentricities,
-            omegas_deg=omegas_deg,
-            masses=masses,
-            incs=incs_used,
+            periods=periods, eccentricities=eccs, omegas_deg=omegas,
+            masses=masses, incs=incs_used,
             mintimes=mintimes,
-            gif=True
+            return_pos=True, integrator=self.integrator
         )
+        for key in positions:
+            positions[key] = np.array(positions[key])
 
-        # Set up the figure with two subplots: one for the orbit, one for the light-time effect.
-        fig, (ax_orbit, ax_oc) = plt.subplots(2, 1, figsize=(6, 10))
-        fig.subplots_adjust(hspace=0.4)
+        # Set up figure & axes
+        if show_oc:
+            fig, (ax_orbit, ax_oc) = plt.subplots(2, 1, figsize=(6, 10))
+            fig.subplots_adjust(hspace=0.4)
+        else:
+            fig, ax_orbit = plt.subplots(1, 1, figsize=(6, 6))
+            ax_oc = None
 
-        # Configure orbit subplot.
-        max_radius = max(
-            max(np.linalg.norm(np.array(pos), axis=1)) for pos in positions.values()
-        )
-        ax_orbit.set_xlim(-max_radius - 1, max_radius + 1)
-        ax_orbit.set_ylim(-max_radius - 1, max_radius + 1)
+        # Orbit plot limits
+        max_r = max(np.linalg.norm(positions[i], axis=1).max() for i in positions)
+        ax_orbit.set_xlim(-max_r-1, max_r+1)
+        ax_orbit.set_ylim(-max_r-1, max_r+1)
         ax_orbit.set_xlabel("X (AU)")
         ax_orbit.set_ylabel("Y (AU)")
         ax_orbit.grid(True)
-        lines_orbit = [ax_orbit.plot([], [], 'o', label=f"Body {i}")[0] for i in range(len(positions))]
+
+        # Draw observer’s line-of-sight arrow when not using real inclination
+        if not real_inc:
+            arrow_props = dict(arrowstyle='->', lw=1.5, color='k')
+            # Arrow from just beyond the top edge pointing inward
+            ax_orbit.annotate(
+                '', 
+                xy=(0,  max_r * 0.8), 
+                xytext=(0,  max_r), 
+                arrowprops=arrow_props
+            )
+            ax_orbit.text(
+                0, max_r * 1.05, 
+                'Observer', 
+                ha='center', 
+                va='bottom', 
+                fontsize=10
+            )
+
+        # Create markers & trails, with first labeled "Binary Star"
+        lines_markers, lines_trails = [], []
+        for idx, key in enumerate(sorted(positions)):
+            label = "Binary Star" if idx == 0 else f"Body {idx}"
+            mline, = ax_orbit.plot([], [], 'o', label=label)
+            tline, = ax_orbit.plot([], [], '-', alpha=0.4)
+            lines_markers.append(mline)
+            lines_trails.append(tline)
         ax_orbit.legend()
 
-        # Configure light-time effect subplot.
-        ax_oc.set_xlim(min(fit2.data.Ecorr), max(fit2.data.Ecorr))
-        ax_oc.set_xlabel("Epoch")
-        ax_oc.set_ylabel("Total O-C Delay (Days)")
-        ax_oc.grid(True)
-        ax_oc.plot(fit2.data.Ecorr, fit2.data.OC, "r.", label="Observed O-C")
-        line_total_oc, = ax_oc.plot([], [], label="Total O-C", color="black", linestyle="dashed")
-        ax_oc.legend()
+        # O–C subplot setup…
+        if show_oc:
+            ax_oc.set_xlim(fit2.data.Ecorr.min(), fit2.data.Ecorr.max())
+            ax_oc.set_xlabel("Epoch")
+            ax_oc.set_ylabel("Total O–C Delay (Days)")
+            ax_oc.grid(True)
+            if show_data:
+                ax_oc.plot(self.data.Ecorr, fit2.data.OC, 'r.', label="Observed O–C")
+            else:
+                ymn, ymx = total_oc_delay.min(), total_oc_delay.max()
+                ax_oc.set_ylim(ymn, ymx)
+            line_total_oc, = ax_oc.plot([], [], '--', color='k', label="Model O–C")
+            ax_oc.legend()
 
-        # Define the update function for the animation.
+        # Animation update function…
         def update(frame):
-            # Update orbit positions.
-            for i, line in enumerate(lines_orbit):
-                x, y = positions[i][frame]
-                line.set_data([x], [y])
-            # Update the O-C delay plot.
-            line_total_oc.set_data(fit2.data.Ecorr[:frame + 1], total_oc_delay[:frame + 1])
-            return lines_orbit + [line_total_oc]
+            artists = []
+            for marker, trail in zip(lines_markers, lines_trails):
+                idx = lines_markers.index(marker)
+                x, y = positions[idx][frame]
+                marker.set_data([x], [y])
+                xs = positions[idx][:frame+1, 0]
+                ys = positions[idx][:frame+1, 1]
+                trail.set_data(xs, ys)
+                artists.extend([marker, trail])
+            if show_oc:
+                line_total_oc.set_data(
+                    fit2.data.Ecorr[:frame+1],
+                    total_oc_delay[:frame+1]
+                )
+                artists.append(line_total_oc)
+            return artists
 
+        # Save animation
+        base_interval = 100
+        interval = max(1, int(base_interval / speed))
         ani = animation.FuncAnimation(
-            fig, update, frames=time_count, interval=100, blit=True
+            fig, update, frames=time_count, interval=interval, blit=True
         )
         ani.save(output_file, writer="pillow")
         plt.close(fig)
-        print(f"Orbit animation saved as {output_file}")
-        
-    def sample_plot(self, samples, nrandom_samples=100, outsuffix="", save_plots=False, show=False, create_median_file=False):
+        print(f"Saved {output_file} at {speed}× speed, "
+            f"{'with' if show_oc else 'no'} O–C, "
+            f"{'showing' if show_data else 'hiding'} data.")
+
+    def calculate_uncertanities(self, samples, epochs, mintimes,
+                                q_lower=16, q_upper=84):
         """
-        Plots the data groups and the sampled models.
-
-        Args:
-            samples (numpy.ndarray): Array of MCMC samples.
-            nrandom_samples (int): Number of random samples to plot from the posterior.
-            outsuffix (str): Suffix for saving the file.
-            save_plots (bool): Whether to save the plots.
-            show (bool): Whether to display the plots.
-            create_median_file (bool): Whether to save the median file.
-
-        Returns:
-            None
-        """
-        Mintimes = self.data.Mintimes
-        Ecorr = self.data.Ecorr 
-        daystosec = 24 * 60 * 60
-        p0 = []
-        variable_indices = []
-        e_th = np.linspace(min(self.data.Ecorr), max(self.data.Ecorr), 3000)
-
-        # Collect parameter values and bounds
-        for model_component in self.model.model_components:
-            for attr, value in model_component.params.items():
-                p0.append(value.value)
-                if value.vary:
-                    variable_indices.append(len(p0) - 1)
-
-        def function(*args):
-            return self.total_oc_delay(args, self.data.m1, self.data.m2, self.data.inc, Ecorr, Mintimes)
-
-        # Use a colormap for different data groups
-        unique_groups = np.unique(self.data.Data_group)  # Get unique data groups
-        colors = plt.get_cmap('tab10', len(unique_groups))
-        color_dict = {name: colors(i) for i, name in enumerate(unique_groups)}
-
-        # Plot samples by group
-        grouped = pd.DataFrame(self.data.df).groupby("Data_group")  # Ensure it's a DataFrame for grouping
-        plt.figure(figsize=(10, 6))
-        for name, group in grouped:
-            plt.plot(group["Ecorr"], group["OC"]*daystosec, ".", label=name, color=color_dict[name])
-
-        # Randomly sample the posterior samples for plotting
-        indices = np.random.choice(range(len(samples)), size=nrandom_samples, replace=False)
-        for idx in indices:
-            sample = samples[idx]
-            y_fit = function(*sample)
-            plt.plot(e_th, y_fit, alpha=0.1, color='grey')  # Light grey for sample fits
-
-        plt.xlabel("Corrected Epoch", fontsize=16)
-        plt.ylabel("O-C (Sec)", fontsize=16)
-        plt.legend(title="Data Group")
-        
-        s, ndim = samples.shape
-        results_mcmc = list(map(lambda v: (v[1], v[2] - v[1], v[1] - v[0]), zip(*np.percentile(samples, [16, 50, 84], axis=0))))
-        results_par = [results_mcmc[i][0] for i in range(ndim)]
-        symmetric_errors = [(results_mcmc[i][1] + results_mcmc[i][2]) / 2 for i in range(ndim)]
-        par_percent = []
-        for n in range(3):
-            for b in range(ndim):
-                par_percent.append(results_mcmc[b][n])
-        midpar, pluspar, minuspar = par_percent[:ndim], par_percent[ndim:ndim*2], par_percent[ndim*2:]
-        model_err_p, model_err_m = self.error_propagate(function, midpar, pluspar, minuspar)
-        
-        for i, params in enumerate(samples[np.random.randint(len(samples), size=nrandom_samples)]):
-            break
-        plt.fill_between(e_th,fit.model(e_th, params, self.model.model_components, variable_indices)*daystosec+3*model_err_p*daystosec,\
-			fit.model(e_th, params, self.model.model_components, variable_indices)*daystosec+3*model_err_m*daystosec,color="gray",alpha=0.1, label="Fit error")
-        # Plot the model with uncertainty
-        plt.plot(e_th, fit.model(e_th, results_par, self.model.model_components, variable_indices) * daystosec, color="r", label="Median fit")
-
-        if save_plots:
-            plt.savefig(f"{self.data.object_name}_sample_plot_{outsuffix}.png")
-        if show:
-            plt.show()
-        plt.close()
-        
-    @staticmethod
-    def error_propagate(function, args, std_arg_p, std_arg_m=False, std_m_negative=False):
-        """
-        Propagates uncertainties through a given function using finite difference approximations.
+        Calculate ±1σ uncertainty envelopes from MCMC samples.
 
         Parameters:
-            function (callable): The function for which to propagate error.
-            args (list or array): The nominal values of the arguments.
-            std_arg_p (list or array): The positive standard deviations for each argument.
-            std_arg_m (list or bool): The negative standard deviations or False.
-            std_m_negative (bool): If True, negates std_arg_m.
+            samples (np.ndarray): Flattened walker samples; shape (N, n_free) for variable parameters.
+            epochs (array-like): Epoch numbers at which to evaluate the O–C curve.
+            mintimes (array-like): Corresponding observation times for each epoch.
+            q_lower (float): Lower percentile (default: 16).
+            q_upper (float): Upper percentile (default: 84).
 
         Returns:
-            If std_arg_m provided: tuple (error_plus, error_minus)
-            Otherwise: error_plus.
+            tuple: (sigma_plus, sigma_minus) envelopes relative to the median O–C curve.
         """
         import numpy as np
-        std_args_p = np.asarray(std_arg_p)
-        alpha_Z_p_sqr = 0.
 
-        if not isinstance(std_arg_m, bool):
-            std_args_m = np.asarray(std_arg_m)
-            if std_m_negative:
-                std_args_m = (-1) * std_args_m
-            alpha_Z_m_sqr = 0.
+        # --- make sure epochs/mintimes are arrays ---
+        epochs   = np.asarray(epochs)
+        mintimes = np.asarray(mintimes)
 
-        for i in range(len(args)):
-            new_args = np.array(args)
-            new_args[i] = args[i] + std_args_p[i]
-            alpha_p = function(*new_args) - function(*args)
-            alpha_Z_p_sqr += alpha_p**2
-            if not isinstance(std_arg_m, bool):
-                new_args = np.array(args)
-                new_args[i] = args[i] - std_args_m[i]
-                alpha_m = function(*new_args) - function(*args)
-                alpha_Z_m_sqr += alpha_m**2
+        # --- collect exactly the variable parameters in the same order MCMC used ---
+        var_params = []
+        for comp in self.model.model_components:
+            for name, p in comp.params.items():
+                if p.vary:
+                    var_params.append((comp, name))
 
-        alpha_Z_p = np.sqrt(alpha_Z_p_sqr)
-        if not isinstance(std_arg_m, bool):
-            alpha_Z_m = np.sqrt(alpha_Z_m_sqr)
-            return alpha_Z_p, alpha_Z_m * (-1)
-        return alpha_Z_p
+        n_free = len(var_params)
+        if samples.shape[1] != n_free:
+            raise ValueError(
+                f"Expected samples.shape[1]={n_free} (number of p.vary=True), "
+                f"but got {samples.shape[1]}"
+            )
 
-    def calculate_fit_uncertanity(self, samples, Ecorr=None, Mintimes=None):
-        """
-        Calculates uncertainties in the fitted model's O-C delay using MCMC samples.
+        # --- build one O–C curve per sample, skipping any NaN runs ---
+        curves = []
+        for theta in samples:
+            # pass only the sampled values in order
+            curve = self.total_oc_delay(
+                list(theta),
+                self.data.m1, self.data.m2,
+                self.data.inc, epochs,
+                fix_units_first=True
+            )
+            # coerce to 1-D array of length len(epochs)
+            curve = np.atleast_1d(curve)
+            if curve.shape != epochs.shape:
+                curve = np.full_like(epochs, curve.flat[0])
+            # drop any that went to nan
+            if np.isnan(curve).any():
+                continue
+            curves.append(curve)
 
-        Parameters:
-            samples (np.ndarray): Array of MCMC samples in the original (non-fixed) units.
-            Ecorr (np.ndarray): Optional array of epochs (defaults to self.data.Ecorr).
-            Mintimes (np.ndarray): Optional array of mintimes (defaults to self.data.Mintimes).
+        if not curves:
+            raise RuntimeError("No valid O–C curves: every sample produced NaNs.")
 
-        Returns:
-            tuple: (positive uncertainty, negative uncertainty)
-        """
-        fit2 = copy.deepcopy(self)
-        fit2.model.Ref_period = fit2.data.Ref_period
-        fit2.model.Ref_mintime = fit2.data.Ref_mintime
-        fit2.model = fit2.model.fix_units()
-        
-        Mintimes = Mintimes if Mintimes is not None else fit2.data.Mintimes
-        Ecorr = Ecorr if Ecorr is not None else fit2.data.Ecorr 
-        
-        # Convert samples back to the original units
-        param_indices = {param_name: idx for idx, param_name in enumerate([p for c in fit2.model.model_components for p in c.params if c.params[p].vary])}
-        samples2 = copy.deepcopy(samples)
-        for component in fit2.model.model_components:
-            for param_name, param_obj in component.params.items():
-                if param_obj.vary:
-                    idx = param_indices[param_name]  # Get the correct index
-                    samples2[:, idx] = _unit_conv(
-                        samples2[:, idx], param_obj.unit, component._main_units[param_name], 
-                        ref_period=fit2.data.Ref_period, ref_mintime=fit2.data.Ref_mintime,
-                        parameter_name=param_name, JD_convertable=param_obj.JD_convertable
-                    )
-        
-        s, ndim = samples2.shape
-        perc = np.percentile(samples2, [16, 50, 84], axis=0)
-        results_mcmc = list(map(lambda v: (v[1], v[2] - v[1], v[1] - v[0]), zip(*perc)))
-        midpar = [results_mcmc[i][0] for i in range(ndim)]
-        pluspar = [results_mcmc[i][1] for i in range(ndim)]
-        minuspar = [results_mcmc[i][2] for i in range(ndim)]
-        
-        def function(*args):
-            return fit2.total_oc_delay(args, fit2.data.m1, fit2.data.m2, fit2.data.inc, Ecorr, Mintimes)
-        
-        model_err_p, model_err_m = fit2.error_propagate(function, midpar, pluspar, minuspar)
-        print(model_err_p)
-        
-        return model_err_p, model_err_m
+        # --- stack & compute percentiles ---
+        curves = np.vstack(curves)  # shape = (n_valid_samples, n_epochs)
+        y_lo  = np.nanpercentile(curves, q_lower, axis=0)
+        y_hi  = np.nanpercentile(curves, q_upper, axis=0)
+        y_med = np.nanpercentile(curves, 50,     axis=0)
 
+        # --- return +1σ & –1σ relative to the median ---
+        sigma_plus  = y_hi  - y_med
+        sigma_minus = y_med - y_lo
+        return sigma_plus, sigma_minus
 
     def plot(self, **kwargs):
         """
-        Plots the O-C data along with the fitted model.
+        Plot the O–C data and uncertainty bands from MCMC samples.
 
         Parameters:
-            samples (np.ndarray): MCMC samples to use for plotting.
-            **kwargs: Additional keyword arguments passed to the sample_plot_nonclass function.
-
-        Returns:
-            The matplotlib Figure object produced by sample_plot_nonclass.
+            samples (np.ndarray): Posterior samples for plotting uncertainty regions.
+            **kwargs: Additional keyword arguments passed to the plotting function (fit_plot),
+                      such as figsize, title, labels, and colors.
         """
         model = self.fitted_model if hasattr(self, "fitted_model") else self.model
-        return sample_plot_nonclass(
+        return fit_plot(
             model=model,
             data=self.data,
+            integrator=self.integrator,
             **kwargs
         )
-    
-    @staticmethod
-    def _gaussian(p, mu, sigma):
-        res = np.log(1.0 / (np.sqrt(2 * np.pi) * sigma)) - 0.5 * (p - mu)**2 / sigma**2
-        if np.isnan(res):
-            print("NAN", p, mu, sigma)
-        return res
+
 
 
     
 class Parameter:  
-    
     """
-    Represents a parameter with a value and a unit.
+    Represents a single model parameter with its value, unit, bounds, and metadata.
 
     Attributes:
-        value: The numerical value of the parameter.
-        unit: The unit of measurement for the parameter value.
-    """ 
+        value (float): Numerical value of the parameter.
+        unit (str or None): Physical unit label (e.g., 'day', 'deg').
+        min (float or None): Lower bound for fitting.
+        max (float or None): Upper bound for fitting.
+        vary (bool): If True, parameter is free during fitting.
+        std (float): Estimated uncertainty of the parameter.
+    """
     def __init__(self, value, unit=None, min=None, max=None, vary=True, JD_convertable=False, expr=None, brute_step=None, user_data=None, std=0):
         """
-        Initializes a Parameter object.
+        Initialize a Parameter instance.
 
-        Args:
-            value: The numerical value of the parameter.
-            unit: The unit of measurement for the parameter value.
+        Parameters:
+            value (float): Initial parameter value.
+            unit (str, optional): Unit label.
+            min (float, optional): Minimum fitting bound.
+            max (float, optional): Maximum fitting bound.
+            JD_convertable (bool): If True, apply JD conversion logic.
+            vary (bool): Whether the parameter is varied in fitting.
+            expr (str, optional): Expression linking this parameter to others.
+            brute_step (float, optional): Step size for brute-force scanning.
+            user_data (any, optional): Auxiliary data for custom use.
+            std (float): Initial uncertainty estimate.
         """
         self.value = value
         self.unit = unit
@@ -2398,7 +2950,16 @@ class Parameter:
 
 class model_component:
     """
-    Parent class for all model components (Lin, Quad, LiTE).
+    Parent class for all model components (e.g., Lin, Quad, LiTE, etc.).
+
+    Manages parameter assignment (wrapping raw floats into `Parameter` objects),
+    enforces unit consistency, and provides generic plotting and summary utilities.
+
+    Key Responsibilities:
+      - Intercept attribute setting for any name in `_main_units` to keep
+        the `params` dict in sync.
+      - Provide `set_params()` to bulk–update parameters.
+      - Offer a default `plot()` and `summary()` for inspection.
     """
     def __setattr__(self, __name, __value) -> None:
         if hasattr(self, "_main_units") and __name in self._main_units.keys():
@@ -2416,13 +2977,13 @@ class model_component:
 
     def set_params(self, params):
         """
-        Set multiple parameters using a dictionary of {variable: value} pairs.
+        Bulk–assign multiple parameters from a dict.
+
+        Each key→value pair is passed through `_set_single_param()`. Any
+        parameter whose name starts with "T_" is flagged as `JD_convertable`.
 
         Args:
-            params (dict): Dictionary containing parameters and their values.
-
-        Returns:
-            None
+            params (dict): {param_name: float or Parameter}
         """
         for variable, value in params.items():
             setattr(self, variable, self._set_single_param(variable, value))
@@ -2431,14 +2992,20 @@ class model_component:
 
     def _set_single_param(self, variable, value):
         """
-        Set a single parameter value, either as a Parameter object or as a float with the appropriate unit.
+        Wrap or update a single parameter into a `Parameter` object.
+
+        - If `value` is float/int: update existing `Parameter.value` if present,
+          else create `Parameter(value, unit)`.
+        - If `value` is already a `Parameter`: enforce unit consistency and
+          preserve any existing `JD_convertable` flag.
+        - Otherwise: raise.
 
         Args:
-            variable (str): Name of the parameter.
-            value: Value of the parameter.
+            variable (str): parameter name
+            value (float or Parameter)
 
         Returns:
-            Parameter: Parameter object representing the parameter value.
+            Parameter
         """
         if isinstance(value, (int, float)):
             if hasattr(self, variable) and isinstance(getattr(self, variable), Parameter):
@@ -2460,13 +3027,12 @@ class model_component:
         
     def plot(self, epochs=None, show=True):
         """
-        Plot the output of individual_model against the provided epochs.
+        Quick-plot this component’s `individual_model` vs. `epochs`.
 
         Args:
-            epochs (array-like): Array-like object containing epochs.
-
-        Returns:
-            None
+            epochs (array-like, optional): X-axis values; defaults to
+                                            `self.epochs` if present.
+            show (bool): If True, calls `plt.show()`.
         """
         if epochs is None:
             epochs = self.epochs
@@ -2508,7 +3074,11 @@ class model_component:
 
 class Lin(model_component):
     """
-    Represents a linear model with parameters for temperature difference (dT), pressure difference (dP), and an optional name.
+    Linear O–C trend: ΔP·epoch + ΔT offset.
+
+    Parameters:
+      - dP (slope, days per cycle)
+      - dT (zero–point offset in days)
     """
     def __init__(self, params = {}, name="Lin"):
         """
@@ -2526,15 +3096,21 @@ class Lin(model_component):
 
     def individual_model(self, x, dP=None, dT=None):
         """
-        Calculates the value of the linear function for a given input x.
+        Calculate the linear O–C trend: ΔP·x + ΔT.
 
-        Parameters:
-        - x (numeric): The input value for the linear function.
-        - dT (float, optional): Temperature difference.
-        - dP (float, optional): Pressure difference.
+        Parameters
+        ----------
+        x : float or array_like
+            Cycle (epoch) value(s) at which to evaluate the model.
+        dP : float, optional
+            Slope (ΔP) in days per cycle. If None, uses this component’s stored `dP`.
+        dT : float, optional
+            Offset (ΔT) in days. If None, uses this component’s stored `dT`.
 
-        Returns:
-        - The result of the linear function calculation.
+        Returns
+        -------
+        float or ndarray
+            Model prediction(s): `dP * x + dT`.
         """
         parameter = {}
         # print("dT=", dT)
@@ -2549,7 +3125,10 @@ class Lin(model_component):
     
 class Quad(model_component):
     """
-    Represents a quadratic model with a parameter for the quadratic coefficient (Q) and an optional name.
+    Quadratic O–C term: Q·epoch².
+
+    Parameters:
+      - Q (day/cycle² coefficient)
     """
     def __init__(self, params = {}, name="Quad", units={}):
         """
@@ -2559,7 +3138,7 @@ class Quad(model_component):
         - params (dict): Dictionary containing parameter Q.
         - name (str): The name of the instance. Default is "Quad".
         """
-        self._main_units = {"Q": "Unitless"}
+        self._main_units = {"Q": "day"}
         self.params = {"Q":0} if params == {} else params
         self.name = name
         self.Ref_period = None
@@ -2568,14 +3147,19 @@ class Quad(model_component):
 
     def individual_model(self, x, Q=None):
         """
-        Calculates the value of the quadratic function for a given input x.
+        Calculate the quadratic O–C term: Q·x².
 
-        Parameters:
-        - x (numeric): The input value for the quadratic function.
-        - Q (float, optional): Quadratic coefficient.
+        Parameters
+        ----------
+        x : float or array_like
+            Cycle (epoch) value(s) at which to evaluate the model.
+        Q : float, optional
+            Quadratic coefficient. If None, uses this component’s stored `Q`.
 
-        Returns:
-        - The result of the quadratic function calculation.
+        Returns
+        -------
+        float or ndarray
+            Model prediction(s): `Q * x**2`.
         """
         # print("Q=",Q)
         parameter = {}
@@ -2588,7 +3172,14 @@ class Quad(model_component):
     
 class LiTE(model_component):
     """
-    Represents a model for calculating the Light-Time Effect (LiTE) in binary star systems or planetary systems.
+    Light-Time Effect: analytical delay from orbital parameters.
+
+    Parameters:
+      - e       : eccentricity [0,1)
+      - omega   : argument of periastron [deg]
+      - P_LiTE  : period [epoch]
+      - T_LiTE  : time of periastron [epoch, JD-convertable]
+      - amp     : semi-amplitude [days]
     """
     def __init__(self, params={}, name="LiTE", units={}):
         self._main_units = {"e": "Unitless", "omega": "deg", "P_LiTE": "epoch", "T_LiTE": "epoch", "amp": "day"}
@@ -2605,45 +3196,71 @@ class LiTE(model_component):
 
     def individual_model(self, x, e=None, omega=None, P_LiTE=None, T_LiTE=None, amp=None, Ref_period=None, Ref_mintime=None):
         """
-        Calculates the LiTE effect for a given input x (time).
+        Calculate the Light–Time Effect (LiTE) delay.
 
-        Parameters:
-        - x (numeric): The input time for which to calculate the LiTE effect.
-        - e (float, optional): Eccentricity.
-        - omega (float, optional): Argument of periapsis in degrees.
-        - P_LiTE (float, optional): Orbital period in epochs.
-        - T_LiTE (float, optional): Time of periastron passage in epochs.
-        - amp (float, optional): Amplitude in days.
+        Parameters
+        ----------
+        x : float or array_like
+            Epoch(s) or time(s) at which to compute the delay.
+        e : float, optional
+            Orbital eccentricity (0 ≤ e < 1). If None, uses stored `e`.
+        omega : float, optional
+            Argument of periastron in degrees. If None, uses stored `omega`.
+        P_LiTE : float, optional
+            Orbital period in epochs. If None, uses stored `P_LiTE`.
+        T_LiTE : float, optional
+            Time of periastron passage in epochs. If None, uses stored `T_LiTE`.
+        amp : float, optional
+            Semi-amplitude of the LiTE in days. If None, uses stored `amp`.
 
-        Returns:
-        - The result of the LiTE function calculation.
+        Returns
+        -------
+        ndarray
+            Light-time delay(s) in days.
         """
         parameter = {}
         if e is None:
             self.Ref_period = Ref_period if Ref_period is not None else self.Ref_period
             self.Ref_mintime = Ref_mintime if Ref_mintime is not None else self.Ref_mintime
             for param in self.params:
-                parameter[param] = _unit_conv(getattr(self, param).value, getattr(self, param).unit, self._main_units[param], ref_period=self.Ref_period, ref_mintime=self.Ref_mintime, parameter_name=param, JD_convertable=getattr(self, param).JD_convertable) 
+                parameter[param] = _unit_conv(getattr(self, param).value, getattr(self, param).unit, self._main_units[param], ref_period=self.Ref_period, ref_mintime=self.Ref_mintime, parameter_name=param, JD_convertable=getattr(self, param).JD_convertable)
         else:
             parameter["e"] = e
             parameter["omega"] = omega
             parameter["P_LiTE"] = P_LiTE
             parameter["T_LiTE"] = T_LiTE
             parameter["amp"] = amp
+
+        if isinstance(parameter["e"], float) and (parameter["e"] >= .999 or parameter["e"] < 0):
+            # return an array of the same shape as x, filled with the sentinel value
+            return np.full_like(x, -1e90)
         
         # print("e=", parameter["e"])
         # print("omega=", parameter["omega"])
         # print("P_LiTE=", parameter["P_LiTE"])
         # print("T_LiTE=", parameter["T_LiTE"])
         # print("amp=", parameter["amp"])
-        if isinstance(parameter["e"], float) and (parameter["e"] >= .999 or parameter["e"] < 0):
-            return -1e90
-        # print(parameter["e"])
-        true_anom = Functions._anomaly(x, parameter["T_LiTE"], parameter["P_LiTE"], parameter["e"])
-        LiTE = Functions._lite_formula(parameter["e"], parameter["amp"], parameter["omega"], true_anom)
-        return LiTE
-    
+
+        return Functions.calculate_lite_effect(
+            x,
+            parameter["e"],
+            parameter["omega"],
+            parameter["P_LiTE"],
+            parameter["T_LiTE"],
+            parameter["amp"],
+        )
+        
 class LiTE_abspar(model_component):
+    """
+    LiTE variant using absolute parameters:
+
+      - mass   [GM_sun]
+      - P_LiTE [day]
+      - ecc    [unitless]
+      - omega  [deg]
+      - T_LiTE [BJD]
+      - inc    [deg]
+    """
     def __init__(self, params = {}, name="LiTE_abspar"):
         self._main_units = {"mass": "GM_sun", "P_LiTE":"day", "ecc": "Unitless", "omega":"deg", "T_LiTE":"BJD", "inc":"deg"}
         self.params = {"mass":0, "P_LiTE":0, "ecc":0, "omega":0, "T_LiTE":0, "inc":90} if params == {} else params
@@ -2652,6 +3269,12 @@ class LiTE_abspar(model_component):
         self.set_params(params=params)
         
 class Grav_rad(model_component):
+    """
+    Radial gravitational term: c + b·epoch + a·epoch².
+
+    Parameters:
+      - a_grav, b_grav, c_grav [days]
+    """
     def __init__(self, params = {}, name="Grav"):
         self._main_units = {"a_grav": "day", "b_grav":"day", "c_grav": "day"}
         self.params = {"a_grav":0, "b_grav":0, "c_grav":0} if params == {} else params
@@ -2660,6 +3283,25 @@ class Grav_rad(model_component):
         self.set_params(params=params)
 
     def individual_model(self, x, a_grav=None, b_grav=None, c_grav=None, Ref_period=None, Ref_mintime=None):
+        """
+        Calculate the radial gravitational component: c + b·x + a·x².
+
+        Parameters
+        ----------
+        x : float or array_like
+            Cycle (epoch) value(s) at which to evaluate the model.
+        a_grav : float, optional
+            Quadratic coefficient (days). If None, uses stored `a_grav`.
+        b_grav : float, optional
+            Linear coefficient (days). If None, uses stored `b_grav`.
+        c_grav : float, optional
+            Constant offset (days). If None, uses stored `c_grav`.
+
+        Returns
+        -------
+        float or ndarray
+            Model prediction(s): `c_grav + b_grav*x + a_grav*x**2`.
+        """
         parameter = {}
         # print("dT=", dT)
         # print("dP=", dP)
@@ -2676,14 +3318,41 @@ class Grav_rad(model_component):
         return parameter["c_grav"] + parameter["b_grav"] * x + parameter["a_grav"] * x**2
     
 class Mag_act(model_component):
+    """
+    Magnetic activity term: c + A·sin(2π/Period·epoch + φ).
+
+    Parameters:
+      - P_mag [days], A_mag [days], phi [radians], c [days]
+    """
     def __init__(self, params = {}, name="Mag"):
-        self._main_units = {"P_mag": "day", "A_mag":"day", "phi": "day", "c": "day"}
+        self._main_units = {"P_mag": "epoch", "A_mag":"day", "phi": "epoch", "c": "epoch"}
         self.params = {"P_mag":0, "A_mag":0, "phi":0, "c":0} if params == {} else params
         self.name = name
         self.Ref_period = None
         self.set_params(params=params)
 
     def individual_model(self, x, P_mag=None, A_mag=None, phi=None, c=None, Ref_period=None, Ref_mintime=None):
+        """
+        Calculate the magnetic activity modulation: c + A_mag·sin(2π/ P_mag·x + φ).
+
+        Parameters
+        ----------
+        x : float or array_like
+            Cycle (epoch) value(s) at which to evaluate the model.
+        P_mag : float, optional
+            Modulation period in days. If None, uses stored `P_mag`.
+        A_mag : float, optional
+            Amplitude in days. If None, uses stored `A_mag`.
+        phi : float, optional
+            Phase offset in radians. If None, uses stored `phi`.
+        c : float, optional
+            Constant offset in days. If None, uses stored `c`.
+
+        Returns
+        -------
+        float or ndarray
+            Model prediction(s): `c + A_mag * sin(2π/ P_mag * x + phi)`.
+        """
         parameter = {}
         # print("dT=", dT)
         # print("dP=", dP)
@@ -2699,109 +3368,217 @@ class Mag_act(model_component):
         
 def calculate_aic_bic(model, data, print_results=False):
     """
-    Calculate AIC and BIC values.
+    Compute goodness‐of‐fit metrics for a fitted model.
 
-    :param lnlike: Log-likelihood value at the best-fit parameters
-    :param theta_best: Best-fit parameters (median of MCMC samples)
-    :param k: Number of parameters
-    :param n: Number of data points
-    :return: AIC and BIC values
+    Parameters
+    ----------
+    model : object
+        A fit‐object whose `.model_components`  list and `.calculate_oc()`
+        method produce the model O–C values.
+    data : object
+        A data container with attributes:
+          - `.Ecorr` : array of epochs
+          - `.OC`    : array of observed-minus-calculated values
+          - `.Errors`: array of observational uncertainties
+    print_results : bool, optional
+        If True, print Chi², reduced Chi², AIC, and BIC to stdout.
+
+    Returns
+    -------
+    chi2 : float
+        Sum of squared residuals divided by variances.
+    reduced_chi2 : float
+        chi2 / (N − k), where N is number of data points and k is number of free parameters.
+    AIC : float
+        Akaike Information Criterion = χ² + 2·k.
+    BIC : float
+        Bayesian Information Criterion = χ² + ln(N)·k.
     """
     model = copy.deepcopy(model)
-    data = copy.deepcopy(data)
+    data  = copy.deepcopy(data)
     model.epochs = data.Ecorr
-    param_count = 0
-    for model_component in model.model_components:
-        for param in model_component.params.values():
-            if param.vary:
+
+    fit2 = fit(data=data, model=model)
+    fit2.fitted_model = fit2.model
+
+    # count free parameters
+    param_count=0
+    for mc in model.model_components:
+        for p_name, value in mc.params.items():
+            if value.vary:
                 param_count += 1
-    chi2 = np.sum((model.calculate_oc() - data.OC) ** 2 / data.Errors ** 2)
+
+    for mc in fit2.model.model_components:
+        for p_name, value in mc.params.items():
+            value.vary = False
+
+    chi2 = np.sum((fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2, fit2.data.inc, mintimes_in_data=True) - data.OC) ** 2 / data.Errors ** 2)
     reduced_chi2 = chi2 / (len(data.OC) - param_count)
-    AIC = chi2 + (2 * param_count)
-    BIC = chi2 + (np.log(len(data.OC)) * param_count)
-    # Print metrics for the current model
+    AIC = chi2 + 2 * param_count
+    BIC = chi2 + np.log(len(data.OC)) * param_count
+
     if print_results:
         print(f"Model: {model.name}")
         print(f"Chi-square: {chi2:.2f}")
         print(f"Reduced Chi-square: {reduced_chi2:.2f}")
         print(f"AIC: {AIC:.2f}")
         print(f"BIC: {BIC:.2f}")
+
     return chi2, reduced_chi2, AIC, BIC
     
 # funcions
 class Functions:
     @staticmethod
-    def _anomaly(x, Ts,Per,ecc):
-        x = np.array(x)
-        mean_anom = (((x - Ts) / Per) * (2 * np.pi)) % (2 * np.pi)  # mean functions.anomaly in radian
-        ecc_anom = Functions._kepler_solve(mean_anom, ecc)
-        true_anom = 2 * np.arctan(np.sqrt((1 + ecc) / (1 - ecc)) * np.tan(ecc_anom / 2.))
-        return true_anom
-
-    @staticmethod
-    def _lite_formula(e,amp,omega, true_anom):
-        radians = np.radians
-        LiTE = ((amp/(np.sqrt(1-(e**2)*(np.cos(radians(omega)))**2)))* \
-            ((((1-e**2)/(1+e*np.cos(true_anom)))* \
-            np.sin(true_anom+radians(omega)))+(e* \
-            np.sin(radians(omega)))))
-        return LiTE
-    
-    @staticmethod
-    def _kepler_solve(m_anom, eccentricity):
-        """Solves Kepler's equation for the eccentric anomaly
-        using Newton's method.
-
-        Arguments:
-        m_anom -- mean anomaly in radians (can be array)
-        eccentricity -- eccentricity of the orbit (should be 0 <= e <= 1)
-
-        Returns: eccentric anomaly in radians.
+    def calculate_lite_effect(times, e, omega_deg, P_LiTE, T_LiTE, amp):
         """
+        Calculates the Light–Time Effect (LiTE) delay given full orbital elements.
 
-        # Check for invalid eccentricity values
-        if np.any(eccentricity > 1) or np.any(eccentricity < 0):
-            print("Error: Eccentricity must be in the range 0 <= e <= 1.")
-            return np.full_like(m_anom, np.nan)
+        Parameters
+        ----------
+        times : array_like
+            Observation times (same units as P_LiTE & T_LiTE, e.g. days).
+        e : float
+            Orbital eccentricity (0 <= e < 1).
+        omega_deg : float
+            Argument of periastron, in degrees.
+        P_LiTE : float
+            Orbital period (same units as `times`).
+        T_LiTE : float
+            Time of periastron passage (same units as `times`).
+        amp : float
+            LiTE semi-amplitude (same units as output delay).
 
-        desired_accuracy = 1e-5
-        e_anom = np.array(m_anom, dtype=np.float64)  # Ensure floating-point precision
-        counter = 0
-        max_iterations = 10000  # Avoid infinite loops
+        Returns
+        -------
+        delay : np.ndarray
+            Light-time delays, same shape as `times`.
+        """
+        times = np.asarray(times, dtype=float)
 
-        while True:
-            counter += 1
+        # sanity-check eccentricity
+        if not (0.0 <= e < 1.0):
+            return -np.inf
+        if not (0 <= amp):
+            return -np.inf
+        if not (0 <= P_LiTE):
+            return -np.inf
 
-            # Compute the difference in Newton's method
-            diff = e_anom - (eccentricity * np.sin(e_anom)) - m_anom
-            
-            # Check for NaN or Inf in the calculation
-            if np.any(np.isnan(diff)) or np.any(np.isinf(diff)):
-                print("Warning: NaN or Inf encountered in diff calculation!")
-                print(f"e_anom: {e_anom}")
-                print(f"eccentricity: {eccentricity}")
-                print(f"m_anom: {m_anom}")
-                return np.full_like(m_anom, np.nan)
+        # mean anomaly M in [0,2π)
+        M = np.remainder(2*np.pi * (times - T_LiTE) / P_LiTE, 2*np.pi)
 
-            denominator = 1 - eccentricity * np.cos(e_anom)
-            
-            # Avoid division by zero or extremely small numbers
-            if np.any(np.abs(denominator) < 1e-10):
-                return np.full_like(m_anom, np.nan)
+        # solve Kepler's equation for eccentric anomaly E
+        E = Functions._kepler(M, e)
 
-            e_anom -= diff / denominator
+        # true anomaly v
+        v = 2 * np.arctan2(
+            np.sqrt(1 + e) * np.sin(E / 2),
+            np.sqrt(1 - e) * np.cos(E / 2)
+        )
 
-            # Convergence check
-            if np.all(np.abs(diff) <= desired_accuracy):
+        # convert argument of periastron to radians
+        ω = np.radians(omega_deg)
+
+        # guard against small denominator in the projection factor
+        denom = np.sqrt(1 - e**2 * np.cos(ω)**2)
+        if np.isclose(denom, 0.0):
+            raise ValueError("Denominator in scale factor too small (check e and ω).")
+
+        # scale amplitude by projection factor
+        scale = amp / denom
+
+        # LiTE delay formula
+        delay = scale * (
+            (1 - e**2) / (1 + e * np.cos(v)) * np.sin(v + ω)
+            + e * np.sin(ω)
+        )
+
+        return delay
+
+    @staticmethod
+    def _kepler(M, e, tolerance=1e-12, max_iter=10000):
+        """
+        Solve Kepler’s equation M = E - e·sin(E) for the eccentric anomaly E
+        via element-wise Newton–Raphson, stopping each entry once converged.
+
+        Parameters
+        ----------
+        M : array_like
+            Mean anomaly in radians.
+        e : float
+            Eccentricity (0 <= e < 1).
+        tolerance : float
+            Convergence threshold for |ΔE| per entry.
+        max_iter : int
+            Maximum number of Newton iterations.
+
+        Returns
+        -------
+        E : np.ndarray
+            Eccentric anomaly in radians, same shape as M.
+        """
+        if not (0.0 <= e < 1.0):
+            raise ValueError(f"Eccentricity e={e} out of bounds [0,1).")
+
+        M = np.asarray(M, dtype=np.float64)
+        E = M.copy()                       # initial guess = mean anomaly
+        mask = np.ones_like(E, dtype=bool) # True = entries still unconverged
+
+        for _ in range(max_iter):
+            # compute delta only for unconverged entries
+            delta = np.zeros_like(E)
+            denom = 1.0 - e * np.cos(E[mask])
+            delta[mask] = (
+                (E[mask] - e * np.sin(E[mask]) - M[mask])
+                / denom
+            )
+
+            # update those entries
+            E[mask] -= delta[mask]
+
+            # mark entries that have now converged
+            mask[mask] = np.abs(delta[mask]) > tolerance
+
+            # if all entries are converged, stop early
+            if not mask.any():
                 break
+        else:
+            # optional: warn if full iterations completed with some entries still unconverged
+            unconverged = np.sum(mask)
+            if unconverged:
+                import warnings
+                warnings.warn(
+                    f"{unconverged} points in _kepler did not converge after {max_iter} iterations."
+                )
 
-            # Stop if iteration count is exceeded
-            if counter > max_iterations:
-                return np.full_like(m_anom, np.nan)
+        return E
 
-        return e_anom
     
 def _unit_conv(value, from_unit, to_unit, ref_period=None, ref_mintime=None, parameter_name=None, JD_convertable=False):
+    """
+    Convert a scalar or array between units, handling “epoch” and Julian‐date offsets.
+
+    Parameters
+    ----------
+    value : float or ndarray
+        The quantity to convert.
+    from_unit : str
+        Original unit (e.g. "day", "epoch", "BJD", etc.).
+    to_unit : str
+        Desired unit.
+    ref_period : float, optional
+        Reference period in same units as time for epoch↔time conversions.
+    ref_mintime : float, optional
+        Reference minimum time (e.g. JD offset) for epoch↔time conversions.
+    parameter_name : str, optional
+        Name of the parameter (used in error messages).
+    JD_convertable : bool, optional
+        Whether “epoch”↔Julian‐date conversion is allowed.
+
+    Returns
+    -------
+    float or ndarray
+        Converted value(s).
+    """
     if from_unit == to_unit:
         return value
     elif to_unit != "epoch" and from_unit != "epoch":
@@ -2810,7 +3587,7 @@ def _unit_conv(value, from_unit, to_unit, ref_period=None, ref_mintime=None, par
         raise ValueError(f"Ref_period is required for converting the unit named '{parameter_name}' to epoch.")
     elif (from_unit == "epoch") and ref_period is None:
         raise ValueError(f"Ref_period is required for converting the unit named '{parameter_name}' from epoch.")
-    elif JD_convertable or from_unit=="BJD" or to_unit=="BJD" or from_unit=="HJD" or to_unit=="HJD":
+    elif from_unit=="BJD" or to_unit=="BJD" or from_unit=="HJD" or to_unit=="HJD":
         if to_unit == "epoch":
             if ref_mintime is not None:
                 con_unit = (value - ref_mintime) / ref_period
@@ -2840,56 +3617,130 @@ def _unit_conv_nonepoch(value, from_unit, to_unit):
     con_unit = value_with_unit.to(u.Unit(to_unit))
     return con_unit.value
     
-def sample_plot_nonclass(model=None,
-                         data=None,
-                         samples=None,
-                         nrandom_samples=100, 
-                         outsuffix="", 
-                         save_plots=False, 
-                         show=False, 
-                         create_median_file=False, 
-                         other_models=None, 
-                         color_palette="tab20", 
-                         group_colors=None,
-                         group_shapes=None,
-                         group_sizes=None,
-                         x_axis_bot="epoch", 
-                         x_axis_top=None,
-                         y_axis_left="second", 
-                         y_axis_right=None,
-                         extend_graph_factor=0.05,
-                         graph_size=(14, 8),
-                         label_size=16,
-                         # Tick size parameters:
-                         tick_size=12,
-                         tick_size_x_bottom=None,
-                         tick_size_x_top=None,
-                         tick_size_y_left=None,
-                         tick_size_y_right=None,
-                         legend_size=10,
-                         legend_shape=(5,6),
-                         x_lim=None,
-                         y_lim=None,
-                         y_lim_right=None,
-                         legend_position="best",
-                         draw_legend=True, 
-                         bjd_offset=2450000.0,
-                         res_plot=False,
-                         res_height_ratios=(4, 1), 
-                         res_hspace=0.4):
+def fit_plot(model=None,
+             data=None,
+             samples=None,
+             nrandom_samples=0,
+             outfile_tag="",
+             save_plots=False,
+             show=False,
+             other_models=None,
+             color_palette="tab20",
+             group_colors=None,
+             group_shapes=None,
+             group_sizes=None,
+             x_axis_bot="epoch",
+             x_axis_top=None,
+             y_axis_left="second",
+             y_axis_right=None,
+             extend_graph_factor=0.05,
+             extend_graph_factor_negx=None,
+             extend_graph_factor_posx=None,
+             graph_size=None,
+             label_size=16,
+             # Tick size parameters:
+             tick_size=10,
+             tick_size_x_bottom=None,
+             tick_size_x_top=None,
+             tick_size_y_left=None,
+             tick_size_y_right=None,
+             legend_size=10,
+             legend_shape=(5,6),
+             x_lim=None,
+             y_lim=None,
+             y_lim_right=None,
+             legend_position="best",
+             draw_legend=True,
+             bjd_offset=2450000.0,
+             res_plot=False,
+             res_height_ratios=(4, 1),
+             draw_main_model=True,
+             res_hspace=0.2,
+             res_ylim=None,            # <-- NEW parameter
+             integrator="IAS15"):
     """
-    Plots an O-C (Observed minus Calculated) diagram with error bars, a median fit,
-    and optionally a residuals subplot.
+    Plots an O–C (Observed minus Calculated) diagram with error bars, a median fit,
+    and optionally a residuals subplot. Top‐axis year ticks follow your January 1 rule.
 
-    This version sets the top x-axis ticks so that:
-      - The first tick is at January 1 of the year: floor(minimum_year) + 1.
-      - The last tick is initially set to ceil(maximum_year).
-      - We then check if (last_tick - first_tick) is divisible by 8; if not, try 7 then 6.
-      - If none of these divisors work, we decrement last_tick until one works.
-      - Tick labels are drawn at January 1 of the chosen years.
-      
-    (Depending on which divisor works, you may see 9, 8, or 7 tick labels.)
-    The main x-axis limits remain tied to the data (or to x_lim) so that the graph width is not extended.
+    Parameters
+    ----------
+    model : fit
+        The fit object containing `.model_components` and `.calculate_oc()`.
+    data : object
+        Data container with attributes:
+          - .df             : pandas.DataFrame with columns "Ecorr", "OC", "Errors", "Data_group"
+          - .Ecorr, .Mintimes : array-like epochs and corresponding times
+          - .Ref_period, .Ref_mintime : floats for epoch⇄time conversions
+          - .object_name    : str used for output filenames
+    samples : ndarray, optional
+        MCMC sample array of shape (n_samples, n_params); used for uncertainty envelopes.
+    nrandom_samples : int, default=0
+        Number of random posterior curves to overplot.
+    outfile_tag : str, default=""
+        Suffix for saved plot filenames.
+    save_plots : bool, default=False
+        If True, saves the figure as a PNG.
+    show : bool, default=False
+        If True, calls `plt.show()`, otherwise closes the figure.
+    other_models : list of model_component, optional
+        Additional models to overlay (each must have `.model_components`).
+    color_palette : str or Colormap, default="tab20"
+        Matplotlib palette for grouping.
+    group_colors : list or str, optional
+        Explicit colors for each Data_group.
+    group_shapes : list or str, optional
+        Marker shapes for each Data_group.
+    group_sizes : list or int, optional
+        Marker sizes for each Data_group.
+    x_axis_bot : {"epoch","bjd","year"} or str, default="epoch"
+        Bottom x-axis label type.
+    x_axis_top : {"epoch","bjd","year"} or str, optional
+        Top x-axis label type.
+    y_axis_left : {"day","hour","minute","second","millisecond"} or str, default="second"
+        Unit for left y-axis.
+    y_axis_right : {"day","hour","minute","second","millisecond"} or str, optional
+        Unit for right y-axis.
+    extend_graph_factor : float, default=0.05
+        Fractional extension of x-range beyond data for model plotting.
+    graph_size : tuple, optional
+        Figure size (width, height) in inches; defaults to (14,8) or (14,14) if `res_plot`.
+    label_size : int, default=16
+        Font size for axis labels.
+    tick_size : int, default=10
+        Base tick label size.
+    tick_size_x_bottom, tick_size_x_top, tick_size_y_left, tick_size_y_right : int, optional
+        Specific tick label sizes; default to `tick_size` if None.
+    legend_size : int, default=10
+        Font size for legend text.
+    legend_shape : tuple, default=(5,6)
+        Legend grid layout (columns, rows).
+    x_lim : tuple, optional
+        Manual x-axis limits.
+    y_lim, y_lim_right : tuple, optional
+        Manual y-axis limits for left and right axes.
+    legend_position : {"best","top","bottom","left","right"} or tuple, default="best"
+        Legend location.
+    draw_legend : bool, default=True
+        Whether to draw the legend.
+    bjd_offset : float, default=2450000.0
+        Offset subtracted when labeling BJD axis.
+    res_plot : bool, default=False
+        If True, include a residuals subplot below the main plot.
+    res_height_ratios : tuple, default=(4,1)
+        Height ratio of main plot to residuals subplot.
+    draw_main_model : bool, default=True
+        If True, overplot the median-fit curve.
+    res_hspace : float, default=0.2
+        Vertical spacing between main and residuals axes.
+    res_ylim : tuple or None, default=None
+        If provided, sets the y-limits of the residuals subplot to this (min, max).
+    integrator : str, default="IAS15"
+        Name of the integrator passed to `fit(model, data, integrator=...)`.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The created figure object.
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -2903,398 +3754,298 @@ def sample_plot_nonclass(model=None,
     tick_size_y_left   = tick_size_y_left or tick_size
     tick_size_y_right  = tick_size_y_right or tick_size
 
-    def dynamic_format(value_range):
-        if value_range <= 1e-5:
-            return "%.7f"
-        elif value_range <= 1e-4:
-            return "%.6f"
-        elif value_range <= 1e-3:
-            return "%.5f"
-        elif value_range <= 1e-2:
-            return "%.4f"
-        elif value_range <= 0.1:
-            return "%.3f"
-        elif value_range <= 1:
-            return "%.2f"
-        elif value_range <= 100:
-            return "%.1f"
-        else:
-            return "%.0f"
+    # Determine figure size
+    if graph_size is None:
+        graph_size = (14, 14) if res_plot else (14, 8)
+
+    # Formatting helpers
+    def dynamic_format(val_range):
+        if val_range <= 1e-5:  return "%.7f"
+        if val_range <= 1e-4:  return "%.6f"
+        if val_range <= 1e-3:  return "%.5f"
+        if val_range <= 1e-2:  return "%.4f"
+        if val_range <= 0.1:   return "%.3f"
+        if val_range <= 1:     return "%.2f"
+        if val_range <= 100:   return "%.1f"
+        return "%.0f"
 
     def approximate_year_from_bjd(bjd):
-        # Year 2000 corresponds to BJD 2451545.0
         return 2000.0 + (bjd - 2451545.0) / 365.25
 
     def approximate_bjd_from_year(year):
-        # Returns BJD corresponding to January 1 of the given year (approximate)
         return 2451545.0 + (year - 2000.0) * 365.25
 
-    def _apply_bottom_xaxis(ax, x_axis_type):
+    def _apply_bottom_xaxis(ax, xtype):
         ax.tick_params(axis='x', labelsize=tick_size_x_bottom)
-        if x_axis_type.lower() == "bjd":
-            ref_mintime = getattr(data, "Ref_mintime", 0)
-            ref_period  = getattr(data, "Ref_period", 1)
-            bottom_ticks = ax.get_xticks()
-            actual_bjd = [ref_mintime + (tick * ref_period) for tick in bottom_ticks]
-            differences = [b - bjd_offset for b in actual_bjd]
-            ax.xaxis.set_major_locator(FixedLocator(bottom_ticks))
-            ax.xaxis.set_major_formatter(FixedFormatter([f"{d:.0f}" for d in differences]))
+        if xtype.lower() == "bjd":
+            ref_mintime = data.Ref_mintime
+            ref_period  = data.Ref_period
+            ticks = ax.get_xticks()
+            bjds = [ref_mintime + t*ref_period for t in ticks]
+            diffs = [b - bjd_offset for b in bjds]
+            ax.xaxis.set_major_locator(FixedLocator(ticks))
+            ax.xaxis.set_major_formatter(FixedFormatter([f"{d:.0f}" for d in diffs]))
             ax.set_xlabel(f"BJD - {int(bjd_offset)}", fontsize=label_size)
-        elif x_axis_type.lower() == "epoch":
+        elif xtype.lower() == "epoch":
             ax.set_xlabel("Cycle", fontsize=label_size)
-        elif x_axis_type.lower() == "year":
+        elif xtype.lower() == "year":
             ax.set_xlabel("Year", fontsize=label_size)
         else:
-            ax.set_xlabel(x_axis_type, fontsize=label_size)
+            ax.set_xlabel(xtype, fontsize=label_size)
 
     # Unit conversion factors
-    conv_factors = {"day": 1, "hour": 24, "minute": 1440, "second": 86400, "millisecond": 86400000}
-    factor_left = conv_factors[y_axis_left.lower()]
-    factor_right = conv_factors[y_axis_right.lower()] if y_axis_right else None
+    conv = {"day":1, "hour":24, "minute":1440, "second":86400, "millisecond":86400000}
+    factor_left  = conv[y_axis_left.lower()]
+    factor_right = conv[y_axis_right.lower()] if y_axis_right else None
 
-    # Extend Ecorr for plotting the model:
-    e_range_val = max(data.Ecorr) - min(data.Ecorr)
-    egap = e_range_val * extend_graph_factor
-    e_th_min = min(data.Ecorr) - egap
-    e_th_max = max(data.Ecorr) + egap
-    e_th = np.linspace(e_th_min, e_th_max, 3000)
+    # Prepare x-range for model curves
+    e_min, e_max = min(data.Ecorr), max(data.Ecorr)
+    if extend_graph_factor_negx is None:
+        extend_graph_factor_negx = extend_graph_factor
+    if extend_graph_factor_posx is None:
+        extend_graph_factor_posx = extend_graph_factor
 
-    # Extend Mintimes for plotting the model:
-    mintime_range = max(data.Mintimes) - min(data.Mintimes)
-    mintime_gap = mintime_range * extend_graph_factor
-    mintime_min = min(data.Mintimes) - mintime_gap
-    mintime_max = max(data.Mintimes) + mintime_gap
-    new_Mintimes = np.linspace(mintime_min, mintime_max, 3000)
+    egap = (e_max - e_min) 
+    ep = np.linspace(e_min - egap * extend_graph_factor_negx, e_max + egap * extend_graph_factor_posx, 3000)
+    t_min, t_max = min(data.Mintimes), max(data.Mintimes)
+    tgap = (t_max - t_min)
+    new_Mintimes = np.linspace(t_min - tgap * extend_graph_factor_negx, t_max + tgap * extend_graph_factor_posx, 3000)
 
-    p0 = []
-    variable_indices = []
-    for comp in model.model_components:
-        for _, val in comp.params.items():
-            p0.append(val.value)
-            if val.vary:
-                variable_indices.append(len(p0) - 1)
-
-    oc_days = data.df["OC"].values
-    err_days = data.df["Errors"].values
-    oc_left = oc_days * factor_left
-    err_left = err_days * factor_left
-
-    if y_axis_right:
-        oc_right = oc_days * factor_right
-    else:
-        oc_right = None
-
-    # Create figure (with or without residuals subplot)
+    # Plot setup
     if res_plot:
         fig, (ax_main, ax_res) = plt.subplots(
-            2, 1, sharex=True,
-            gridspec_kw={'height_ratios': res_height_ratios, 'hspace': res_hspace},
+            2,1, sharex=True,
+            gridspec_kw={'height_ratios':res_height_ratios, 'hspace':res_hspace},
             figsize=graph_size
         )
         ax_left = ax_main
     else:
         fig, ax_left = plt.subplots(figsize=graph_size)
 
-    # Group data by "Data_group"
-    df_reset = data.df.reset_index(drop=True)
-    groups_list = list(df_reset.groupby("Data_group"))
-    num_groups = len(groups_list)
-    
-    # Process group colors
-    if group_colors is None:
-        cmap = plt.get_cmap(color_palette, num_groups)
-        group_color_list = [cmap(i) for i in range(num_groups)]
-    else:
-        if not isinstance(group_colors, list):
-            group_color_list = [group_colors] * num_groups
-        else:
-            group_color_list = group_colors.copy()
-        if len(group_color_list) < num_groups:
-            group_color_list += [None] * (num_groups - len(group_color_list))
-        cmap = plt.get_cmap(color_palette, num_groups)
-        for i in range(num_groups):
-            if group_color_list[i] is None:
-                group_color_list[i] = cmap(i)
-    
-    # Process group shapes
-    if group_shapes is None:
-        group_shapes_list = ["."] * num_groups
-    else:
-        if not isinstance(group_shapes, list):
-            group_shapes_list = [group_shapes] * num_groups
-        else:
-            group_shapes_list = group_shapes.copy()
-        if len(group_shapes_list) < num_groups:
-            group_shapes_list += [None] * (num_groups - len(group_shapes_list))
-        group_shapes_list = [m if m is not None else "." for m in group_shapes_list]
-    
-    # Process group sizes
-    if group_sizes is None:
-        group_sizes_list = [5] * num_groups
-    else:
-        if not isinstance(group_sizes, list):
-            group_sizes_list = [group_sizes] * num_groups
-        else:
-            group_sizes_list = group_sizes.copy()
-        if len(group_sizes_list) < num_groups:
-            group_sizes_list += [None] * (num_groups - len(group_sizes_list))
-        group_sizes_list = [s if s is not None else 5 for s in group_sizes_list]
-    
-    group_color_dict = {}
-    group_shape_dict = {}
-    group_size_dict = {}
-    for i, (name, grp) in enumerate(groups_list):
-        group_color_dict[name] = group_color_list[i]
-        group_shape_dict[name] = group_shapes_list[i]
-        group_size_dict[name] = group_sizes_list[i]
-        markerfacecolor = 'none' if group_shapes_list[i] == "o" else group_color_list[i]
+    # Group plotting
+    df0 = data.df.reset_index(drop=True)
+    groups = list(df0.groupby("Data_group"))
+    cmap = plt.get_cmap(color_palette, len(groups))
+    for i,(name,grp) in enumerate(groups):
+        color = (group_colors[i] if group_colors else cmap(i))
+        marker = (group_shapes[i] if group_shapes else ".")
+        size   = (group_sizes[i] if group_sizes else 5)
+        mfc = 'none' if marker=="o" else color
         ax_left.errorbar(
-            grp["Ecorr"],
-            grp["OC"] * factor_left,
-            yerr=grp["Errors"] * factor_left,
-            fmt=group_shapes_list[i],
-            markersize=group_sizes_list[i],
-            mfc=markerfacecolor,
-            alpha=1,
-            elinewidth=1.2,
-            capsize=2,
-            color=group_color_list[i],
-            label=name
+            grp["Ecorr"], grp["OC"]*factor_left, yerr=grp["Errors"]*factor_left,
+            fmt=marker, markersize=size, mfc=mfc, elinewidth=1.2, capsize=2,
+            color=color, label=name
         )
-        
-    # Perform the fit and compute the best-fit curve
-    fit2 = fit(model, data)
+
+    # Perform fit
+    fit2 = fit(model, data, integrator=integrator)
     fit2 = copy.deepcopy(fit2)
-    fit2.model.Ref_period = fit2.data.Ref_period
+    fit2.model.Ref_period  = fit2.data.Ref_period
     fit2.model.Ref_mintime = fit2.data.Ref_mintime
     fit2.fitted_model = fit2.model.fix_units()
-    fit2.model = fit2.model.fix_units()
+    fit2.model        = fit2.model.fix_units()
 
+    # Draw uncertainty bands or median only
     if samples is not None:
-        model_err_p, model_err_m = fit2.calculate_fit_uncertanity(samples, Ecorr=e_th, Mintimes=new_Mintimes)
+        MAX_DRAW = 500
+        if samples.shape[0] > MAX_DRAW:
+            idx = np.random.default_rng(0).choice(samples.shape[0], MAX_DRAW, replace=False)
+            samp = samples[idx]
+        else:
+            samp = samples
+
+        sigma_p, sigma_m = fit2.calculate_uncertanities(samp, epochs=ep, mintimes=new_Mintimes)
         for comp in fit2.model.model_components:
-            for val in comp.params.values():
-                val.vary = False
-        best_fit = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2,
-                                       fit2.data.inc, e_th, new_Mintimes)
-        best_fit_left = best_fit * factor_left
-        err_p_left = model_err_p * factor_left
-        err_m_left = model_err_m * factor_left
-        ax_left.fill_between(e_th, best_fit_left + err_p_left,
-                             best_fit_left + err_m_left, color="gray", alpha=0.15)
+            for p in comp.params.values():
+                p.vary = False
+        best = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2, fit2.data.inc, ep)
+        best_left = best * factor_left
+
+        ax_left.fill_between(ep, best_left+sigma_p*factor_left, best_left-sigma_m*factor_left,
+                             color="gray", alpha=0.15, label="±1 σ")
+
+        # random sample curves
+        if nrandom_samples>0:
+            theta0 = [p.value for comp in model.model_components for p in comp.params.values()]
+            free_idx = [i for i,(comp) in enumerate([p for comp in model.model_components for p in comp.params.values()]) if p.vary]
+            samp_idx = np.random.default_rng().choice(samp.shape[0], min(nrandom_samples,len(samp)), replace=False)
+            for row in samp[samp_idx]:
+                th = np.array(theta0)
+                th[free_idx] = row
+                curve = fit2.total_oc_delay(th, fit2.data.m1, fit2.data.m2, fit2.data.inc, ep, fix_units_first=True)*factor_left
+                ax_left.plot(ep, curve, lw=0.6, alpha=0.15, color="gray", zorder=-1)
+            ax_left.plot([],[], color="gray",alpha=0.15,lw=0.6,label=f"{len(samp_idx)} random samples")
+
     else:
         for comp in fit2.model.model_components:
-            for val in comp.params.values():
-                val.vary = False
-        best_fit = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2,
-                                       fit2.data.inc, e_th, new_Mintimes)
-        best_fit_left = best_fit * factor_left
+            for p in comp.params.values():
+                p.vary = False
+        best = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2, fit2.data.inc, ep)
+        best_left = best * factor_left
 
-    ax_left.plot(e_th, best_fit_left, color="r", label="Best Fit", linewidth=3)
-    ax_left.axhline(y=0, color="black", linestyle="--", alpha=0.4, linewidth=1)
-    
-    # Set x-axis limits for the main plot (do not force extension)
-    if x_lim is None:
-        ax_left.set_xlim(e_th_min, e_th_max)
-    else:
-        ax_left.set_xlim(x_lim)
+    # Median-fit line
+    if draw_main_model:
+        ax_left.plot(ep, best_left, color="r", linewidth=3, label="Median fit", zorder=100)
+    ax_left.axhline(0, color="black", linestyle="--", alpha=0.4)
 
-    # Set y-axis limits for the main plot
-    if y_lim is not None:
+    # Main plot limits
+    ax_left.set_xlim(x_lim if x_lim else (e_min-egap*extend_graph_factor_negx, e_max+egap*extend_graph_factor_posx))
+    if y_lim:
         ax_left.set_ylim(y_lim)
     else:
-        left_data_min = oc_left.min()
-        left_data_max = oc_left.max()
-        if left_data_max == left_data_min:
-            left_data_min -= 1e-7
-            left_data_max += 1e-7
-        pad_left = (left_data_max - left_data_min) * 0.05
-        ax_left.set_ylim(left_data_min - pad_left, left_data_max + pad_left)
+        dmin, dmax = (data.df["OC"]*factor_left).agg(["min","max"])
+        if dmin==dmax:
+            dmin -= 1e-7; dmax += 1e-7
+        pad = (dmax-dmin)*0.05
+        ax_left.set_ylim(dmin-pad, dmax+pad)
 
-    # Setup right y-axis if requested
+    # Right y-axis
     if y_axis_right:
-        ax_right = ax_left.twinx()
-        if y_lim_right is not None:
-            ax_right.set_ylim(y_lim_right)
+        ax_r = ax_left.twinx()
+        if y_lim_right:
+            ax_r.set_ylim(y_lim_right)
         else:
-            left_min, left_max = ax_left.get_ylim()
-            ratio = factor_right / factor_left
-            ax_right.set_ylim(left_min * ratio, left_max * ratio)
-    else:
-        ax_right = None
+            lmin,lmax = ax_left.get_ylim()
+            ratio = factor_right/factor_left
+            ax_r.set_ylim(lmin*ratio, lmax*ratio)
+        ax_r.yaxis.set_major_locator(MaxNLocator(nbins=7))
+        rf = dynamic_format(ax_r.get_ylim()[1]-ax_r.get_ylim()[0])
+        ax_r.yaxis.set_major_formatter(FormatStrFormatter(rf))
+        ax_r.tick_params(axis='y', labelsize=tick_size_y_right)
+        ax_r.set_ylabel(f"O-C ({y_axis_right.title()})", fontsize=label_size)
 
+    # Left y formatting
     ax_left.yaxis.set_major_locator(MaxNLocator(nbins=7))
-    left_range_val = ax_left.get_ylim()[1] - ax_left.get_ylim()[0]
-    fmt_left = dynamic_format(left_range_val)
-    ax_left.yaxis.set_major_formatter(FormatStrFormatter(fmt_left))
+    lf = dynamic_format(ax_left.get_ylim()[1]-ax_left.get_ylim()[0])
+    ax_left.yaxis.set_major_formatter(FormatStrFormatter(lf))
     ax_left.tick_params(axis='y', labelsize=tick_size_y_left)
-    left_label = "O-C (ms)" if y_axis_left.lower() == "millisecond" else f"O-C ({y_axis_left.title()})"
-    ax_left.set_ylabel(left_label, fontsize=label_size)
-    
-    if ax_right:
-        ax_right.yaxis.set_major_locator(MaxNLocator(nbins=7))
-        right_range_val = ax_right.get_ylim()[1] - ax_right.get_ylim()[0]
-        fmt_right = dynamic_format(right_range_val)
-        ax_right.yaxis.set_major_formatter(FormatStrFormatter(fmt_right))
-        ax_right.tick_params(axis='y', labelsize=tick_size_y_right)
-        right_label = "O-C (ms)" if y_axis_right.lower() == "millisecond" else f"O-C ({y_axis_right.title()})"
-        ax_right.set_ylabel(right_label, fontsize=label_size)
+    ax_left.set_ylabel(f"O-C ({y_axis_left.title()})", fontsize=label_size)
 
-    # Apply bottom x-axis formatting
+    # Bottom x-axis
     _apply_bottom_xaxis(ax_left, x_axis_bot)
-    
-    # ---- Top x-axis: Ticks on January 1 boundaries per your new rules ----
-    if x_axis_top is not None:
+
+    # Top x-axis
+    if x_axis_top:
         ax_top = ax_left.twiny()
-        # Do not extend the main x-range; use the current limits
         ax_top.set_xlim(ax_left.get_xlim())
         ax_top.tick_params(axis='x', labelsize=tick_size_x_top)
         ax_top.xaxis.set_ticks_position('top')
-        if x_axis_top.lower() == "year":
-            ref_mintime = getattr(fit2.data, "Ref_mintime", 0)
-            ref_period  = getattr(fit2.data, "Ref_period", 1)
-            x_min, x_max = ax_left.get_xlim()
-            bjd_min = ref_mintime + x_min * ref_period
-            bjd_max = ref_mintime + x_max * ref_period
-            yr_min = approximate_year_from_bjd(bjd_min)
-            yr_max = approximate_year_from_bjd(bjd_max)
-            # Per your instruction: first tick = floor(yr_min) + 1, last tick = ceil(yr_max)
-            first_tick = int(np.floor(yr_min)) + 1
-            last_tick  = int(np.ceil(yr_max))
-            # Try to see if (last_tick - first_tick) is divisible by 8, then 7, then 6.
-            divisor = None
-            for d in [8, 7, 6]:
-                if (last_tick - first_tick) % d == 0:
-                    divisor = d
-                    break
-            # If not divisible, reduce last_tick by 1 until one works.
-            while divisor is None and last_tick > first_tick:
-                last_tick -= 1
-                for d in [8, 7, 6]:
-                    if (last_tick - first_tick) % d == 0:
-                        divisor = d
-                        break
-            if divisor is not None:
-                interval = (last_tick - first_tick) // divisor
-                tick_years = [first_tick + i * interval for i in range(divisor + 1)]
+        if x_axis_top.lower()=="year":
+            x0, x1 = ax_left.get_xlim()
+            b0 = data.Ref_mintime + x0*data.Ref_period
+            b1 = data.Ref_mintime + x1*data.Ref_period
+            y0 = approximate_year_from_bjd(b0)
+            y1 = approximate_year_from_bjd(b1)
+            t0 = int(np.floor(y0))+1
+            t1 = int(np.ceil(y1))
+            # choose divisor
+            for d in (8,7,6):
+                if (t1-t0)%d==0:
+                    div=d; break
             else:
-                # Fallback: simply use first_tick and last_tick
-                tick_years = [first_tick, last_tick]
-            # Convert each tick year (January 1) to epoch units.
-            top_positions = []
-            for yr in tick_years:
-                bjd_val = approximate_bjd_from_year(yr)
-                epoch_val = (bjd_val - ref_mintime) / ref_period
-                top_positions.append(epoch_val)
-            ax_top.xaxis.set_major_locator(FixedLocator(top_positions))
-            ax_top.xaxis.set_major_formatter(FixedFormatter([str(yr) for yr in tick_years]))
+                div=None
+            while div is None and t1>t0:
+                t1-=1
+                for d in (8,7,6):
+                    if (t1-t0)%d==0:
+                        div=d; break
+            if div:
+                step=(t1-t0)//div
+                yrs=[t0+i*step for i in range(div+1)]
+            else:
+                yrs=[t0,t1]
+            pos=[]
+            for yr in yrs:
+                bj = approximate_bjd_from_year(yr)
+                pos.append((bj-data.Ref_mintime)/data.Ref_period)
+            ax_top.xaxis.set_major_locator(FixedLocator(pos))
+            ax_top.xaxis.set_major_formatter(FixedFormatter([str(yr) for yr in yrs]))
             ax_top.set_xlabel("Year", fontsize=label_size)
-        elif x_axis_top.lower() == "bjd":
+        elif x_axis_top.lower()=="bjd":
             ax_top.set_xlabel("BJD", fontsize=label_size)
-        elif x_axis_top.lower() == "epoch":
-            ax_top.set_xlabel("Cycle", fontsize=label_size)
-
-    # Plot other models if provided
-    if other_models and isinstance(other_models, list):
-        fit2b = copy.deepcopy(fit2)
-        for om in other_models:
-            fit2b.model = om
-            bf2 = fit2b.total_oc_delay([], fit2.data.m1, fit2.data.m2,
-                                        fit2.data.inc, e_th, new_Mintimes)
-            ax_left.plot(e_th, bf2 * factor_left, label="Other Model", linewidth=1)
-
-    # Draw legend if requested
-    if draw_legend:
-        if isinstance(legend_position, tuple):
-            if isinstance(legend_position[0], str):
-                loc_used, bbox_used = legend_position
-                ax_left.legend(loc=loc_used, bbox_to_anchor=bbox_used, fontsize=legend_size,
-                               ncol=legend_shape[0], frameon=False, title="Data Group")
-            else:
-                ax_left.legend(loc="center", bbox_to_anchor=legend_position, fontsize=legend_size,
-                               ncol=legend_shape[0], frameon=False, title="Data Group")
         else:
-            if legend_position.lower() == "best":
-                ax_left.legend(loc="best", fontsize=legend_size,
-                               ncol=legend_shape[0], frameon=False, title="Data Group")
-            else:
-                loc_dict = {"top": ("upper center", (0.5, 1.02)),
-                            "bottom": ("upper center", (0.5, -0.2)),
-                            "left": ("center left", (-0.1, 0.5)),
-                            "right": ("center right", (1.1, 0.5))}
-                if legend_position.lower() in loc_dict:
-                    loc, bbox = loc_dict[legend_position.lower()]
-                    ax_left.legend(loc=loc, bbox_to_anchor=bbox, fontsize=legend_size,
-                                   ncol=legend_shape[0], frameon=False, title="Data Group")
-                else:
-                    ax_left.legend(loc="best", fontsize=legend_size,
-                                   ncol=legend_shape[0], frameon=False, title="Data Group")
+            ax_top.set_xlabel(x_axis_top.title(), fontsize=label_size)
 
-    # Residuals subplot if requested
+    # Overlay other_models
+    if other_models:
+        fitb = copy.deepcopy(fit2)
+        for om in other_models:
+            om = copy.deepcopy(om)
+            fitb.model = om
+            for mc in om.model_components:
+                for p in mc.params.values():
+                    p.vary=False
+            bf = fitb.total_oc_delay([], fitb.data.m1, fitb.data.m2, fitb.data.inc, ep, fix_units_first=True)
+            ax_left.plot(ep, bf*factor_left, label=om.name, linewidth=1, zorder=50)
+
+    # Legend
+    if draw_legend:
+        ax_left.legend(loc=legend_position if isinstance(legend_position,str) else "best",
+                       bbox_to_anchor=legend_position if isinstance(legend_position,tuple) else None,
+                       fontsize=legend_size, ncol=legend_shape[0], frameon=False, title="Data Group")
+
+    # Residuals subplot
     if res_plot:
-        df_reset = fit2.data.df.reset_index(drop=True)
-        epochs = df_reset["Ecorr"].values
-        observed = df_reset["OC"].values * factor_left
-        predicted = np.interp(epochs, e_th, best_fit_left)
-        residuals = observed - predicted
-        errors = df_reset["Errors"].values * factor_left
+        # compute residuals
+        obs = df0["OC"].values * factor_left
+        pred = np.interp(df0["Ecorr"].values, ep, best_left)
+        res = obs - pred
+        err = df0["Errors"].values * factor_left
 
-        grouped_res = df_reset.groupby("Data_group")
-        for name, grp in grouped_res:
+        for name, grp in df0.groupby("Data_group"):
             idx = grp.index
-            x_vals = epochs[idx]
-            y_vals = residuals[idx]
-            y_errs = errors[idx]
-            marker_here = group_shape_dict.get(name, ".")
-            size_here = group_size_dict.get(name, 5)
-            ax_res.errorbar(x_vals, y_vals, yerr=y_errs, fmt=marker_here,
-                            linestyle='none', markersize=size_here, alpha=1,
-                            elinewidth=1.2, capsize=2, color=group_color_dict.get(name))
-        ax_res.axhline(0, color="black", linestyle="--", linewidth=1)
+            ax_res.errorbar(grp["Ecorr"], res[idx], yerr=err[idx],
+                            fmt=group_shapes[0] if group_shapes else ".",
+                            markersize=group_sizes[0] if group_sizes else 5,
+                            elinewidth=1.2, capsize=2,
+                            color=group_colors[0] if group_colors else cmap(0))
+        ax_res.axhline(0, linestyle='--', linewidth=1)
         _apply_bottom_xaxis(ax_res, x_axis_bot)
-        
-        res_min = residuals.min()
-        res_max = residuals.max()
-        if res_max == res_min:
-            res_min -= 1e-7
-            res_max += 1e-7
-        pad_res = (res_max - res_min) * 0.05
-        ax_res.set_ylim(res_min - pad_res, res_max + pad_res)
 
-        left_label_res = "Residuals (ms)" if y_axis_left.lower() == "millisecond" else f"Residuals ({y_axis_left.title()})"
-        ax_res.set_ylabel(left_label_res, fontsize=label_size)
-        if x_lim is not None:
+        if res_ylim:
+            ax_res.set_ylim(res_ylim)
+        else:
+            rmin, rmax = res.min(), res.max()
+            if rmin==rmax:
+                rmin -= 1e-7; rmax += 1e-7
+            pad = (rmax-rmin)*0.05
+            ax_res.set_ylim(rmin-pad, rmax+pad)
+
+        ax_res.yaxis.set_major_locator(MaxNLocator(nbins=7))
+        rf = dynamic_format(ax_res.get_ylim()[1]-ax_res.get_ylim()[0])
+        ax_res.yaxis.set_major_formatter(FormatStrFormatter(rf))
+        ax_res.tick_params(axis='y', labelsize=tick_size_y_left)
+        ax_res.set_ylabel(y_axis_left.title(), fontsize=label_size)
+
+        if y_axis_right:
+            ax_res_r = ax_res.twinx()
+            l0,l1 = ax_res.get_ylim()
+            ax_res_r.set_ylim(l0*factor_right/factor_left, l1*factor_right/factor_left)
+            ax_res_r.yaxis.set_major_locator(MaxNLocator(nbins=7))
+            rf2 = dynamic_format(ax_res_r.get_ylim()[1]-ax_res_r.get_ylim()[0])
+            ax_res_r.yaxis.set_major_formatter(FormatStrFormatter(rf2))
+            ax_res_r.tick_params(axis='y', labelsize=tick_size_y_right)
+            ax_res_r.set_ylabel(y_axis_right.title(), fontsize=label_size)
+
+        if x_lim:
             ax_res.set_xlim(x_lim)
         else:
-            ax_res.set_xlim(e_th_min, e_th_max)
-        ax_res.yaxis.set_major_locator(MaxNLocator(nbins=7))
-        res_range = ax_res.get_ylim()[1] - ax_res.get_ylim()[0]
-        fmt_res = dynamic_format(res_range)
-        ax_res.yaxis.set_major_formatter(FormatStrFormatter(fmt_res))
-        ax_res.tick_params(axis='y', labelsize=tick_size_y_left)
-        
-        if y_axis_right:
-            ax_res_right = ax_res.twinx()
-            ratio = factor_right / factor_left
-            left_ylim = ax_res.get_ylim()
-            ax_res_right.set_ylim(left_ylim[0] * ratio, left_ylim[1] * ratio)
-            ax_res_right.yaxis.set_major_locator(MaxNLocator(nbins=7))
-            res_range_right = ax_res_right.get_ylim()[1] - ax_res_right.get_ylim()[0]
-            fmt_right_res = dynamic_format(res_range_right)
-            ax_res_right.yaxis.set_major_formatter(FormatStrFormatter(fmt_right_res))
-            ax_res_right.tick_params(axis='y', labelsize=tick_size_y_right)
-            right_label_res = "Residuals (ms)" if y_axis_right.lower() == "millisecond" else f"Residuals ({y_axis_right.title()})"
-            ax_res_right.set_ylabel(right_label_res, fontsize=label_size)
-            
+            ax_res.set_xlim(e_min-egap*extend_graph_factor_negx, e_max+egap*extend_graph_factor_posx)
         ax_res.set_title("Residuals", fontsize=label_size)
 
+    # Save or show
     if save_plots:
-        plt.savefig(f"{fit2.data.object_name}_errorbar_plot_{outsuffix}.png",
-                    dpi=300, bbox_inches="tight")
-
+        plt.savefig(f"{data.object_name}_errorbar_plot_{outfile_tag}.png", dpi=300, bbox_inches="tight")
     if show:
         plt.show()
     else:
         plt.close(fig)
 
     return fig
+
+
+@np.vectorize
+def _gauss_ln(x, mu, sigma):
+    """Vectorised log-pdf of a 1-D Gaussian N(μ,σ)."""
+    var = sigma * sigma
+    return -0.5 * ((x - mu) ** 2 / var + _LN_2PI + np.log(var))
