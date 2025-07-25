@@ -1,10 +1,10 @@
-# orbit_param_calculator.py 
+# orbit_param_calculator.py
 
 import numpy as np
 from uncertainties import unumpy as unp
 
 # -----------------------------------------------------------------------------
-# Physical constants 
+# Physical constants
 # -----------------------------------------------------------------------------
 c             = 299_792_458.0        # speed of light in m/s
 AU            = 1.495978707e11       # astronomical unit in meters
@@ -45,7 +45,7 @@ def mass_func(period_yr, a12sini_au):
     return a12sini_au**3 / period_yr**2
 
 
-def m3sini3(f_mass, m1, m2, tol: float = 1e-15, maxiter: int = 50):
+def m3sini3(f_mass, m1, m2, tol: float = 1e-8, maxiter: int = 50):
     """
     Solve x = m3*sin(i) from the exact equation
         f_mass = x^3 / (m1 + m2 + x)^2

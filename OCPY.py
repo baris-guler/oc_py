@@ -1370,7 +1370,7 @@ class OC_data:
 
 
     # Creating O-C with data
-    def generate_oc(self) -> tuple[np.ndarray, np.ndarray]:
+    def generate_oc(self, inplace=False) -> tuple[np.ndarray, np.ndarray]:
         """ 
         Generates the O-C (Observed minus Calculated) data based on provided or existing time measurements, minima types, and orbital parameters.
 
@@ -1392,6 +1392,9 @@ class OC_data:
         C = self.Ref_mintime + Ecorr * self.Ref_period
         OC = self.Mintimes - C
         self._calculated = True
+        if inplace:
+            self.Ecorr = Ecorr
+            self.OC = OC
         return Ecorr, OC
     
     def plot_OC(self, vertical_lines=[], horizontal_lines=[], show=True, with_errors=True, legend=True):
@@ -1636,7 +1639,7 @@ class fit:
         
     def fit_model(self, method='leastsq', iter_cb=None, scale_covar=True, verbose=False, 
                 fit_kws=None, nan_policy=None, calc_covar=True, max_nfev=None, 
-                coerce_farray=True, integrator="IAS15", **kwargs):
+                coerce_farray=True, integrator="IAS15", ias15_accuracy=1e-8, **kwargs):
         """
         Perform least squares fit (use leastsq as method)
         or nelder-mead fit (use nelder as method)
@@ -1655,10 +1658,14 @@ class fit:
         Returns:
             lmfit.MinimizerResult: Fit result object.
         """
-        self.integrator=integrator
+        fit2 = copy.deepcopy(self)
+        fit2.model.Ref_period = fit2.data.Ref_period
+        fit2.model.Ref_mintime = fit2.data.Ref_mintime
+        fit2.integrator=integrator
+        fit2.ias15_accuracy = ias15_accuracy
         # Prepare variable parameter names in order.
         variable_param_names = []
-        for component in self.model.model_components:
+        for component in fit2.model.model_components:
             for param_name, param_obj in component.params.items():
                 if param_obj.vary:
                     variable_param_names.append((component, param_name))
@@ -1671,16 +1678,16 @@ class fit:
                 full_name = f"{param_name}_{component.name}"
                 variable_params.append(params[full_name])
             # Call total_oc_delay with the extracted raw parameters.
-            return self.total_oc_delay(
-                variable_params, m1=self.data.m1, m2=self.data.m2, inc=self.data.inc, Ecorr=x, fix_units_first=True, mintimes_in_data=True
+            return fit2.total_oc_delay(
+                variable_params, m1=fit2.data.m1, m2=fit2.data.m2, inc=fit2.data.inc, Ecorr=x, fix_units_first=True, mintimes_in_data=True
             )
 
         # Assemble lmfit Parameters with **raw values**, no conversion.
         params = lm.Parameters()
-        for component in self.model.model_components:
+        for component in fit2.model.model_components:
             identifier = component.name
-            component.Ref_mintime = self.model.Ref_mintime
-            component.Ref_period = self.model.Ref_period
+            component.Ref_mintime = fit2.model.Ref_mintime
+            component.Ref_period = fit2.model.Ref_period
             for attr, value in component.params.items():
                 param_name = f'{attr}_{identifier}'
                 param_value = getattr(component, attr).value
@@ -1691,22 +1698,22 @@ class fit:
                         brute_step=value.brute_step)
 
         # Create lmfit Model using the total_oc_delay wrapper.
-        model = lm.Model(total_oc_delay_lmfit, independent_vars=['x'], nan_policy=self.model.nan_policy)
+        model = lm.Model(total_oc_delay_lmfit, independent_vars=['x'], nan_policy=fit2.model.nan_policy)
 
-        weights = self.data.Weights
+        weights = fit2.data.Weights
         if np.any(np.isnan(weights)):
             raise ValueError("Weights cannot contain NaN values. Fix nan values of your data weights.")
 
         # Perform the fit.
         result = model.fit(
-            self.data.OC, params, x=self.data.Ecorr, weights=weights, 
+            fit2.data.OC, params, x=fit2.data.Ecorr, weights=weights, 
             method=method, iter_cb=iter_cb, scale_covar=scale_covar, 
             fit_kws=fit_kws, nan_policy=nan_policy, calc_covar=calc_covar, 
             max_nfev=max_nfev, coerce_farray=coerce_farray, **kwargs
         )
 
         # Update the fitted model.
-        self.fitted_model = self.create_fit_model(result)
+        self.fitted_model = fit2.create_fit_model(result)
         return result
 
     def fit_lin(self, inplace=True, plot=False):
@@ -2092,6 +2099,7 @@ class fit:
                 # — LiTE‐based calculation path —
 
                 # 1) convert units for P_LiTE, amp, omega, T_LiTE
+                print("tts=", comp.T_LiTE.std)
                 P_val = _unit_conv(comp.P_LiTE.value, comp.P_LiTE.unit,
                                 comp._main_units["P_LiTE"],
                                 ref_period=self.data.Ref_period,
@@ -2137,7 +2145,11 @@ class fit:
                                 ref_mintime=self.data.Ref_mintime,
                                 parameter_name="T_LiTE",
                                 JD_convertable=comp.T_LiTE.JD_convertable)
-                T_std = _unit_conv(comp.T_LiTE.std,  comp.T_LiTE.unit,
+                if comp.T_LiTE.unit == "BJD":
+                    tlite_temp_unit = "day"
+                else:
+                    tlite_temp_unit = comp.T_LiTE.unit
+                T_std = _unit_conv(comp.T_LiTE.std,  tlite_temp_unit,
                                 comp._main_units["T_LiTE"],
                                 ref_period=self.data.Ref_period,
                                 ref_mintime=self.data.Ref_mintime,
@@ -2145,6 +2157,8 @@ class fit:
                                 JD_convertable=comp.T_LiTE.JD_convertable)
 
                 ecc_uf = ufloat(comp.e.value, comp.e.std)
+
+                print("tts=", T_std)
 
                 # 2) wrap in ufloats
                 P_ratio  = ufloat(P_val,   P_std)
@@ -2408,10 +2422,11 @@ class fit:
         return res
 
 
-    def fit_model_prob(self, walker=20, steps=300, burn_in=0, threads=4, std_scale=0.05, 
-                    create_sample_file=False, trace_plot=True, 
-                    corner_plot=True, fit_plot=True, save_plots=False, show_plots=True, 
-                    prob_prior=True, return_samples=True, return_sampler=False, multiprocessing=True, integrator="IAS15"):
+    def fit_model_prob(self, walker=20, steps=300, burn_in=0, threads=4, std_scale=0.05,
+                       create_sample_file=False, trace_plot=True,
+                       corner_plot=True, fit_plot=True, save_plots=False, show_plots=True,
+                       prob_prior=True, return_samples=True, return_sampler=False,
+                       multiprocessing=True, integrator="IAS15", ias15_accuracy=1e-8):
         """
         Run MCMC sampling with emcee to approximate the posterior distribution of model parameters.
 
@@ -2420,26 +2435,22 @@ class fit:
             steps (int): Total number of steps (iterations) to run per walker.
             burn_in (int): Number of initial samples to discard from each chain as burn-in.
             threads (int): Number of parallel threads to use for sampling.
-            std_scale (float): Fractional scale for dispersing initial walker positions around the least-squares solution.
+            std_scale (float): Fractional scale for dispersing initial walker positions.
             create_sample_file (bool): If True, write the post-burn-in samples to a text file.
             trace_plot (bool): If True, generate and optionally save/display the trace diagnostic plot.
-            corner_plot (bool): If True, generate and optionally save/display the corner plot of the posterior samples.
+            corner_plot (bool): If True, generate and optionally save/display the corner plot.
             fit_plot (bool): If True, plot the sampled posterior distributions over the data.
-            save_plots (bool): If True, save any generated plots to disk using the configured outfile_tag.
-            show_plots (bool): If True, display plots interactively during execution.
+            save_plots (bool): If True, save any generated plots to disk.
+            show_plots (bool): If True, display plots interactively.
             prob_prior (bool): If True, include prior probability in the log-posterior calculation.
             return_samples (bool): If True, return the flattened sample array.
-            return_sampler (bool): If True, return the emcee sampler instance instead of or in addition to samples.
+            return_sampler (bool): If True, return the emcee sampler instance as well.
             multiprocessing (bool): If True, use multiprocessing Pool for parallel sampling.
-            integrator (str or None): Name of N-body integrator to pass to simulate_oc_delay, or IAS15 to use default. 
-                WHFast recommended for non close encounters.
-                IAS15 recommended for close encounters.
-                Mercurius recommended for complicated.
-                'https://rebound.readthedocs.io/en/latest/integrators/' for better info
+            integrator (str or None): Integrator name to pass to simulate_oc_delay.
 
         Returns:
             np.ndarray or tuple: By default returns the flattened samples array;
-            if return_sampler is True, returns (samples, sampler) instead.
+            if return_sampler is True, returns (samples, sampler).
         """
         import copy
         import os
@@ -2448,20 +2459,21 @@ class fit:
         from multiprocessing import Pool
         import matplotlib.pyplot as plt
 
-        # Create a deepcopy of the model and update its units.
+        # Create a deepcopy of this fitter and fix its model units
         fit2 = copy.deepcopy(self)
         fit2.model.Ref_period = fit2.data.Ref_period
         fit2.model.Ref_mintime = fit2.data.Ref_mintime
         fit2.model = fit2.model.fix_units()
 
         fit2.integrator = integrator
+        fit2.ias15_accuracy = ias15_accuracy
 
         if burn_in > steps:
             raise ValueError("Burn-in value cannot be greater than the number of steps.")
 
-        # Check for incompatible model components.
-        lite_abspar_count = sum(isinstance(i, LiTE_abspar) for i in fit2.model.model_components)
-        lite_count = sum(isinstance(i, LiTE) for i in fit2.model.model_components)
+        # Check for incompatible model components
+        lite_abspar_count = sum(isinstance(c, LiTE_abspar) for c in fit2.model.model_components)
+        lite_count        = sum(isinstance(c, LiTE)        for c in fit2.model.model_components)
         if lite_abspar_count > 0 and lite_count > 0:
             raise ValueError("Cannot have both LiTE_abspar and LiTE components in the model.")
         if lite_abspar_count > 0:
@@ -2472,24 +2484,11 @@ class fit:
             m1, m2, inc = 0, 0, 0
 
         fit2.prob_prior = prob_prior
-        initial_params, initial_stds, min_bounds, max_bounds = [], [], [], []
 
-        # Gather initial parameter values and bounds for all variable parameters.
-        for component in fit2.model.model_components:
-            for param_name, param_obj in component.params.items():
-                if param_obj.vary:
-                    initial_params.append(param_obj.value)
-                    initial_stds.append((param_obj.std if param_obj.std is not None else 1e-4) * std_scale)
-                    min_bounds.append(param_obj.min if param_obj.min is not None else -np.inf)
-                    max_bounds.append(param_obj.max if param_obj.max is not None else np.inf)
-
-        nwalkers = walker
-        ndim = len(initial_params)
-
-        # Initialize walker positions.
+        # Initialize walker positions and dimensionality
         initial_positions, nwalkers, ndim = fit2._initialize_sampling_params(walker, std_scale)
 
-        # Run the MCMC sampler.
+        # Run the MCMC sampler
         if multiprocessing:
             with Pool(threads) as pool:
                 sampler = emcee.EnsembleSampler(nwalkers, ndim, fit2.log_prob, args=(m1, m2, inc), pool=pool)
@@ -2498,85 +2497,82 @@ class fit:
             sampler = emcee.EnsembleSampler(nwalkers, ndim, fit2.log_prob, args=(m1, m2, inc), threads=threads)
             sampler.run_mcmc(initial_positions, steps, progress=True)
 
-        # Get the full sample chain.
-        # Note: In recent versions of emcee, the shape is (nsteps, nwalkers, ndim)
+        # Retrieve the full chain: shape = (nsteps, nwalkers, ndim)
         chains = sampler.get_chain(flat=False)
         print(f"Using all {chains.shape[1]} walkers without filtering for stuck walkers.")
 
-        # Build a mapping of variable parameter names to their indices.
-        variable_params = []
-        for component in fit2.model.model_components:
-            for param_name, param_obj in component.params.items():
-                if param_obj.vary:
-                    variable_params.append(param_name)
-        param_indices = {param_name: idx for idx, param_name in enumerate(variable_params)}
+        # Build a list of unique parameter keys: "ComponentName.param_name"
+        variable_keys = []
+        for comp in fit2.model.model_components:
+            for pname, pobj in comp.params.items():
+                if pobj.vary:
+                    key = f"{comp.name}.{pname}"
+                    variable_keys.append(key)
 
-        # Convert the chain to the specified unit.
-        chains_conv = chains.copy()  # shape: (nsteps, nwalkers, ndim)
-        for component in fit2.model.model_components:
-            for param_name, param_obj in component.params.items():
-                if param_obj.vary:
-                    idx = param_indices[param_name]
-                    chains_conv[:, :, idx] = _unit_conv(
-                        chains_conv[:, :, idx],
-                        component._main_units[param_name],
-                        param_obj.unit,
-                        ref_period=fit2.data.Ref_period,
-                        ref_mintime=fit2.data.Ref_mintime,
-                        parameter_name=param_name,
-                        JD_convertable=param_obj.JD_convertable
-                    )
+        # Map each key to its index in the chain's last axis
+        param_indices = {key: idx for idx, key in enumerate(variable_keys)}
 
-        # For plotting purposes, flatten the entire converted chain.
+        # Convert the chain into user-specified units
+        chains_conv = chains.copy()
+        for comp in fit2.model.model_components:
+            for pname, pobj in comp.params.items():
+                if not pobj.vary:
+                    continue
+                key = f"{comp.name}.{pname}"
+                idx = param_indices[key]
+                # convert from internal main_units to user unit
+                chains_conv[:, :, idx] = _unit_conv(
+                    chains_conv[:, :, idx],
+                    comp._main_units[pname],
+                    pobj.unit,
+                    ref_period=fit2.data.Ref_period,
+                    ref_mintime=fit2.data.Ref_mintime,
+                    parameter_name=pname,
+                    JD_convertable=pobj.JD_convertable
+                )
+
+        # Flatten and apply burn-in
         samples_full = chains_conv.reshape(-1, ndim)
-        samples_old = copy.deepcopy(samples_full)
-
-        # Apply burn-in correctly: remove the first `burn_in` steps (axis 0) then flatten.
-        samples = chains_conv[burn_in:, :, :].reshape(-1, ndim)
+        samples      = chains_conv[burn_in:, :, :].reshape(-1, ndim)
         if samples.size == 0:
-            raise ValueError("No samples remain after applying burn_in. "
-                            "Please check that the burn_in parameter is less than the number of steps.")
-        print("samples burned in")
+            raise ValueError("No samples remain after applying burn_in.")
 
-        # Update the fitted model based on the sampled parameters.
+        # Create a fitted model from the posterior samples
         self.fitted_model = self.create_model_from_samples(samples)
-        print("new model created")
 
-        # Build a unique filename suffix for outputs.
-        identifier = "".join([component.name for component in fit2.model.model_components])
+        # Prepare an output filename tag
+        identifier  = "".join([c.name for c in fit2.model.model_components])
         outfile_tag = f"{nwalkers}_{steps}_{identifier}"
-        base_filename = f"{fit2.data.object_name}_prios_{outfile_tag}.out"
-        filename = base_filename
-        counter = 1
+        base_fn     = f"{fit2.data.object_name}_prios_{outfile_tag}.out"
+        filename    = base_fn
+        counter     = 1
         while os.path.exists(filename):
-            filename = f"{base_filename}_{counter}.out"
+            filename = f"{base_fn}_{counter}.out"
             counter += 1
-        outfile_tag = f"{nwalkers}_{steps}_{identifier}_{counter}"
+        outfile_tag = f"{outfile_tag}_{counter}"
 
+        # Optionally save samples to file
         if create_sample_file:
-            sample_filename = f"{fit2.data.object_name}_emcee_samples_{outfile_tag}.out"
-            print(f"Saving MCMC samples to {sample_filename}...")
-            np.savetxt(sample_filename, samples, delimiter=" ", fmt="%.8e")
+            sample_fn = f"{fit2.data.object_name}_emcee_samples_{outfile_tag}.out"
+            print(f"Saving MCMC samples to {sample_fn}...")
+            np.savetxt(sample_fn, samples, delimiter=" ", fmt="%.8e")
 
-        results_mcmc = list(map(lambda v: (v[1], v[2] - v[1], v[1] - v[0]),
-                                zip(*np.percentile(samples, [16, 50, 84], axis=0))))
-
-        # Generate diagnostic plots if requested.
+        # Generate diagnostic plots
         if trace_plot:
             self.trace_plot(sampler, outfile_tag="filtered", save_plots=save_plots, show=show_plots)
         if corner_plot:
-            self.corner_plot(samples, outfile_tag="filtered", save_plots=save_plots, show=show_plots)
+            self.corner_plot(samples,    outfile_tag="filtered", save_plots=save_plots, show=show_plots)
         if fit_plot:
-            self.plot(samples=samples, show=True)
+            self.plot(samples=samples, show=show_plots)
 
         plt.show()
 
+        # Return according to flags
         if return_sampler and not return_samples:
             return sampler
         if return_samples and not return_sampler:
             return samples
-        else:
-            return samples, sampler
+        return samples, sampler
 
 
     def _initialize_sampling_params(self, walker, std_scale):
@@ -3138,7 +3134,7 @@ class Quad(model_component):
         - params (dict): Dictionary containing parameter Q.
         - name (str): The name of the instance. Default is "Quad".
         """
-        self._main_units = {"Q": "day"}
+        self._main_units = {"Q": "epoch"}
         self.params = {"Q":0} if params == {} else params
         self.name = name
         self.Ref_period = None
@@ -3235,11 +3231,11 @@ class LiTE(model_component):
             # return an array of the same shape as x, filled with the sentinel value
             return np.full_like(x, -1e90)
         
-        # print("e=", parameter["e"])
-        # print("omega=", parameter["omega"])
-        # print("P_LiTE=", parameter["P_LiTE"])
-        # print("T_LiTE=", parameter["T_LiTE"])
-        # print("amp=", parameter["amp"])
+        print("e=", parameter["e"])
+        print("omega=", parameter["omega"])
+        print("P_LiTE=", parameter["P_LiTE"])
+        print("T_LiTE=", parameter["T_LiTE"])
+        print("amp=", parameter["amp"])
 
         return Functions.calculate_lite_effect(
             x,
@@ -3625,6 +3621,8 @@ def fit_plot(model=None,
              save_plots=False,
              show=False,
              other_models=None,
+             other_model_colors=None,   # <-- NEW parameter
+             model_color="r",           # <-- NEW parameter
              color_palette="tab20",
              group_colors=None,
              group_shapes=None,
@@ -3656,7 +3654,7 @@ def fit_plot(model=None,
              res_height_ratios=(4, 1),
              draw_main_model=True,
              res_hspace=0.2,
-             res_ylim=None,            # <-- NEW parameter
+             res_ylim=None,
              integrator="IAS15"):
     """
     Plots an O–C (Observed minus Calculated) diagram with error bars, a median fit,
@@ -3684,6 +3682,11 @@ def fit_plot(model=None,
         If True, calls `plt.show()`, otherwise closes the figure.
     other_models : list of model_component, optional
         Additional models to overlay (each must have `.model_components`).
+    other_model_colors : list of color-spec, optional
+        Colors to use when overplotting each model in `other_models`.
+        If provided, length must match `len(other_models)`.
+    model_color : color-spec, default="r"
+        Color for the main median-fit curve.
     color_palette : str or Colormap, default="tab20"
         Matplotlib palette for grouping.
     group_colors : list or str, optional
@@ -3748,7 +3751,7 @@ def fit_plot(model=None,
     import copy
     from matplotlib.ticker import FormatStrFormatter, MaxNLocator, FixedLocator, FixedFormatter
 
-    # Set tick sizes (use tick_size if not provided)
+    # Set tick sizes
     tick_size_x_bottom = tick_size_x_bottom or tick_size
     tick_size_x_top    = tick_size_x_top or tick_size
     tick_size_y_left   = tick_size_y_left or tick_size
@@ -3805,16 +3808,18 @@ def fit_plot(model=None,
     if extend_graph_factor_posx is None:
         extend_graph_factor_posx = extend_graph_factor
 
-    egap = (e_max - e_min) 
-    ep = np.linspace(e_min - egap * extend_graph_factor_negx, e_max + egap * extend_graph_factor_posx, 3000)
+    egap = (e_max - e_min)
+    ep = np.linspace(e_min - egap * extend_graph_factor_negx,
+                     e_max + egap * extend_graph_factor_posx, 3000)
     t_min, t_max = min(data.Mintimes), max(data.Mintimes)
     tgap = (t_max - t_min)
-    new_Mintimes = np.linspace(t_min - tgap * extend_graph_factor_negx, t_max + tgap * extend_graph_factor_posx, 3000)
+    new_Mintimes = np.linspace(t_min - tgap * extend_graph_factor_negx,
+                               t_max + tgap * extend_graph_factor_posx, 3000)
 
     # Plot setup
     if res_plot:
         fig, (ax_main, ax_res) = plt.subplots(
-            2,1, sharex=True,
+            2, 1, sharex=True,
             gridspec_kw={'height_ratios':res_height_ratios, 'hspace':res_hspace},
             figsize=graph_size
         )
@@ -3822,15 +3827,15 @@ def fit_plot(model=None,
     else:
         fig, ax_left = plt.subplots(figsize=graph_size)
 
-    # Group plotting
+    # Data groups
     df0 = data.df.reset_index(drop=True)
     groups = list(df0.groupby("Data_group"))
     cmap = plt.get_cmap(color_palette, len(groups))
-    for i,(name,grp) in enumerate(groups):
+    for i, (name, grp) in enumerate(groups):
         color = (group_colors[i] if group_colors else cmap(i))
         marker = (group_shapes[i] if group_shapes else ".")
         size   = (group_sizes[i] if group_sizes else 5)
-        mfc = 'none' if marker=="o" else color
+        mfc = 'none' if marker == "o" else color
         ax_left.errorbar(
             grp["Ecorr"], grp["OC"]*factor_left, yerr=grp["Errors"]*factor_left,
             fmt=marker, markersize=size, mfc=mfc, elinewidth=1.2, capsize=2,
@@ -3845,7 +3850,7 @@ def fit_plot(model=None,
     fit2.fitted_model = fit2.model.fix_units()
     fit2.model        = fit2.model.fix_units()
 
-    # Draw uncertainty bands or median only
+    # Draw uncertainty bands or median-only
     if samples is not None:
         MAX_DRAW = 500
         if samples.shape[0] > MAX_DRAW:
@@ -3861,21 +3866,27 @@ def fit_plot(model=None,
         best = fit2.total_oc_delay([], fit2.data.m1, fit2.data.m2, fit2.data.inc, ep)
         best_left = best * factor_left
 
-        ax_left.fill_between(ep, best_left+sigma_p*factor_left, best_left-sigma_m*factor_left,
+        ax_left.fill_between(ep,
+                             best_left + sigma_p*factor_left,
+                             best_left - sigma_m*factor_left,
                              color="gray", alpha=0.15, label="±1 σ")
 
-        # random sample curves
-        if nrandom_samples>0:
+        if nrandom_samples > 0:
             theta0 = [p.value for comp in model.model_components for p in comp.params.values()]
-            free_idx = [i for i,(comp) in enumerate([p for comp in model.model_components for p in comp.params.values()]) if p.vary]
-            samp_idx = np.random.default_rng().choice(samp.shape[0], min(nrandom_samples,len(samp)), replace=False)
+            free_idx = [i for i,(p) in enumerate(
+                [p for comp in model.model_components for p in comp.params.values()]) if p.vary]
+            samp_idx = np.random.default_rng().choice(samp.shape[0],
+                                                     min(nrandom_samples, len(samp)),
+                                                     replace=False)
             for row in samp[samp_idx]:
                 th = np.array(theta0)
                 th[free_idx] = row
-                curve = fit2.total_oc_delay(th, fit2.data.m1, fit2.data.m2, fit2.data.inc, ep, fix_units_first=True)*factor_left
+                curve = (fit2.total_oc_delay(th, fit2.data.m1, fit2.data.m2,
+                                             fit2.data.inc, ep, fix_units_first=True)
+                         * factor_left)
                 ax_left.plot(ep, curve, lw=0.6, alpha=0.15, color="gray", zorder=-1)
-            ax_left.plot([],[], color="gray",alpha=0.15,lw=0.6,label=f"{len(samp_idx)} random samples")
-
+            ax_left.plot([], [], color="gray", alpha=0.15, lw=0.6,
+                         label=f"{len(samp_idx)} random samples")
     else:
         for comp in fit2.model.model_components:
             for p in comp.params.values():
@@ -3885,19 +3896,26 @@ def fit_plot(model=None,
 
     # Median-fit line
     if draw_main_model:
-        ax_left.plot(ep, best_left, color="r", linewidth=3, label="Median fit", zorder=100)
+        ax_left.plot(
+            ep, best_left,
+            color=model_color,      # use the new model_color
+            linewidth=3,
+            label="Median fit",
+            zorder=100
+        )
     ax_left.axhline(0, color="black", linestyle="--", alpha=0.4)
 
     # Main plot limits
-    ax_left.set_xlim(x_lim if x_lim else (e_min-egap*extend_graph_factor_negx, e_max+egap*extend_graph_factor_posx))
+    ax_left.set_xlim(x_lim if x_lim else (e_min - egap*extend_graph_factor_negx,
+                                         e_max + egap*extend_graph_factor_posx))
     if y_lim:
         ax_left.set_ylim(y_lim)
     else:
         dmin, dmax = (data.df["OC"]*factor_left).agg(["min","max"])
-        if dmin==dmax:
+        if dmin == dmax:
             dmin -= 1e-7; dmax += 1e-7
-        pad = (dmax-dmin)*0.05
-        ax_left.set_ylim(dmin-pad, dmax+pad)
+        pad = (dmax - dmin) * 0.05
+        ax_left.set_ylim(dmin - pad, dmax + pad)
 
     # Right y-axis
     if y_axis_right:
@@ -3905,18 +3923,18 @@ def fit_plot(model=None,
         if y_lim_right:
             ax_r.set_ylim(y_lim_right)
         else:
-            lmin,lmax = ax_left.get_ylim()
-            ratio = factor_right/factor_left
-            ax_r.set_ylim(lmin*ratio, lmax*ratio)
+            lmin, lmax = ax_left.get_ylim()
+            ratio = factor_right / factor_left
+            ax_r.set_ylim(lmin * ratio, lmax * ratio)
         ax_r.yaxis.set_major_locator(MaxNLocator(nbins=7))
-        rf = dynamic_format(ax_r.get_ylim()[1]-ax_r.get_ylim()[0])
+        rf = dynamic_format(ax_r.get_ylim()[1] - ax_r.get_ylim()[0])
         ax_r.yaxis.set_major_formatter(FormatStrFormatter(rf))
         ax_r.tick_params(axis='y', labelsize=tick_size_y_right)
         ax_r.set_ylabel(f"O-C ({y_axis_right.title()})", fontsize=label_size)
 
     # Left y formatting
     ax_left.yaxis.set_major_locator(MaxNLocator(nbins=7))
-    lf = dynamic_format(ax_left.get_ylim()[1]-ax_left.get_ylim()[0])
+    lf = dynamic_format(ax_left.get_ylim()[1] - ax_left.get_ylim()[0])
     ax_left.yaxis.set_major_formatter(FormatStrFormatter(lf))
     ax_left.tick_params(axis='y', labelsize=tick_size_y_left)
     ax_left.set_ylabel(f"O-C ({y_axis_left.title()})", fontsize=label_size)
@@ -3930,38 +3948,37 @@ def fit_plot(model=None,
         ax_top.set_xlim(ax_left.get_xlim())
         ax_top.tick_params(axis='x', labelsize=tick_size_x_top)
         ax_top.xaxis.set_ticks_position('top')
-        if x_axis_top.lower()=="year":
+        if x_axis_top.lower() == "year":
             x0, x1 = ax_left.get_xlim()
             b0 = data.Ref_mintime + x0*data.Ref_period
             b1 = data.Ref_mintime + x1*data.Ref_period
             y0 = approximate_year_from_bjd(b0)
             y1 = approximate_year_from_bjd(b1)
-            t0 = int(np.floor(y0))+1
+            t0 = int(np.floor(y0)) + 1
             t1 = int(np.ceil(y1))
-            # choose divisor
-            for d in (8,7,6):
-                if (t1-t0)%d==0:
-                    div=d; break
+            for d in (8, 7, 6):
+                if (t1 - t0) % d == 0:
+                    div = d; break
             else:
-                div=None
-            while div is None and t1>t0:
-                t1-=1
-                for d in (8,7,6):
-                    if (t1-t0)%d==0:
-                        div=d; break
+                div = None
+            while div is None and t1 > t0:
+                t1 -= 1
+                for d in (8, 7, 6):
+                    if (t1 - t0) % d == 0:
+                        div = d; break
             if div:
-                step=(t1-t0)//div
-                yrs=[t0+i*step for i in range(div+1)]
+                step = (t1 - t0) // div
+                yrs = [t0 + i*step for i in range(div+1)]
             else:
-                yrs=[t0,t1]
-            pos=[]
+                yrs = [t0, t1]
+            pos = []
             for yr in yrs:
                 bj = approximate_bjd_from_year(yr)
-                pos.append((bj-data.Ref_mintime)/data.Ref_period)
+                pos.append((bj - data.Ref_mintime) / data.Ref_period)
             ax_top.xaxis.set_major_locator(FixedLocator(pos))
             ax_top.xaxis.set_major_formatter(FixedFormatter([str(yr) for yr in yrs]))
             ax_top.set_xlabel("Year", fontsize=label_size)
-        elif x_axis_top.lower()=="bjd":
+        elif x_axis_top.lower() == "bjd":
             ax_top.set_xlabel("BJD", fontsize=label_size)
         else:
             ax_top.set_xlabel(x_axis_top.title(), fontsize=label_size)
@@ -3969,36 +3986,55 @@ def fit_plot(model=None,
     # Overlay other_models
     if other_models:
         fitb = copy.deepcopy(fit2)
-        for om in other_models:
-            om = copy.deepcopy(om)
-            fitb.model = om
-            for mc in om.model_components:
+        for idx, om in enumerate(other_models):
+            om_copy = copy.deepcopy(om)
+            fitb.model = om_copy
+            for mc in om_copy.model_components:
                 for p in mc.params.values():
-                    p.vary=False
-            bf = fitb.total_oc_delay([], fitb.data.m1, fitb.data.m2, fitb.data.inc, ep, fix_units_first=True)
-            ax_left.plot(ep, bf*factor_left, label=om.name, linewidth=1, zorder=50)
+                    p.vary = False
+            bf = (fitb.total_oc_delay([], fitb.data.m1, fitb.data.m2,
+                                      fitb.data.inc, ep, fix_units_first=True)
+                  * factor_left)
+
+            # pick color for this model if provided
+            color = None
+            if other_model_colors:
+                try:
+                    color = other_model_colors[idx]
+                except IndexError:
+                    color = None
+
+            ax_left.plot(
+                ep, bf,
+                label=om.name,
+                linewidth=1,
+                zorder=50,
+                color=color
+            )
 
     # Legend
     if draw_legend:
-        ax_left.legend(loc=legend_position if isinstance(legend_position,str) else "best",
-                       bbox_to_anchor=legend_position if isinstance(legend_position,tuple) else None,
-                       fontsize=legend_size, ncol=legend_shape[0], frameon=False, title="Data Group")
+        ax_left.legend(loc=legend_position if isinstance(legend_position, str) else "best",
+                       bbox_to_anchor=legend_position if isinstance(legend_position, tuple) else None,
+                       fontsize=legend_size, ncol=legend_shape[0],
+                       frameon=False, title="Data Group")
 
     # Residuals subplot
     if res_plot:
-        # compute residuals
         obs = df0["OC"].values * factor_left
         pred = np.interp(df0["Ecorr"].values, ep, best_left)
         res = obs - pred
         err = df0["Errors"].values * factor_left
 
         for name, grp in df0.groupby("Data_group"):
-            idx = grp.index
-            ax_res.errorbar(grp["Ecorr"], res[idx], yerr=err[idx],
-                            fmt=group_shapes[0] if group_shapes else ".",
-                            markersize=group_sizes[0] if group_sizes else 5,
-                            elinewidth=1.2, capsize=2,
-                            color=group_colors[0] if group_colors else cmap(0))
+            idx_grp = grp.index
+            ax_res.errorbar(
+                grp["Ecorr"], res[idx_grp], yerr=err[idx_grp],
+                fmt=group_shapes[0] if group_shapes else ".",
+                markersize=group_sizes[0] if group_sizes else 5,
+                elinewidth=1.2, capsize=2,
+                color=group_colors[0] if group_colors else cmap(0)
+            )
         ax_res.axhline(0, linestyle='--', linewidth=1)
         _apply_bottom_xaxis(ax_res, x_axis_bot)
 
@@ -4006,23 +4042,23 @@ def fit_plot(model=None,
             ax_res.set_ylim(res_ylim)
         else:
             rmin, rmax = res.min(), res.max()
-            if rmin==rmax:
+            if rmin == rmax:
                 rmin -= 1e-7; rmax += 1e-7
-            pad = (rmax-rmin)*0.05
-            ax_res.set_ylim(rmin-pad, rmax+pad)
+            pad = (rmax - rmin)*0.05
+            ax_res.set_ylim(rmin - pad, rmax + pad)
 
         ax_res.yaxis.set_major_locator(MaxNLocator(nbins=7))
-        rf = dynamic_format(ax_res.get_ylim()[1]-ax_res.get_ylim()[0])
+        rf = dynamic_format(ax_res.get_ylim()[1] - ax_res.get_ylim()[0])
         ax_res.yaxis.set_major_formatter(FormatStrFormatter(rf))
         ax_res.tick_params(axis='y', labelsize=tick_size_y_left)
         ax_res.set_ylabel(y_axis_left.title(), fontsize=label_size)
 
         if y_axis_right:
             ax_res_r = ax_res.twinx()
-            l0,l1 = ax_res.get_ylim()
+            l0, l1 = ax_res.get_ylim()
             ax_res_r.set_ylim(l0*factor_right/factor_left, l1*factor_right/factor_left)
             ax_res_r.yaxis.set_major_locator(MaxNLocator(nbins=7))
-            rf2 = dynamic_format(ax_res_r.get_ylim()[1]-ax_res_r.get_ylim()[0])
+            rf2 = dynamic_format(ax_res_r.get_ylim()[1] - ax_res_r.get_ylim()[0])
             ax_res_r.yaxis.set_major_formatter(FormatStrFormatter(rf2))
             ax_res_r.tick_params(axis='y', labelsize=tick_size_y_right)
             ax_res_r.set_ylabel(y_axis_right.title(), fontsize=label_size)
@@ -4030,22 +4066,17 @@ def fit_plot(model=None,
         if x_lim:
             ax_res.set_xlim(x_lim)
         else:
-            ax_res.set_xlim(e_min-egap*extend_graph_factor_negx, e_max+egap*extend_graph_factor_posx)
+            ax_res.set_xlim(e_min - egap*extend_graph_factor_negx,
+                            e_max + egap*extend_graph_factor_posx)
         ax_res.set_title("Residuals", fontsize=label_size)
 
     # Save or show
     if save_plots:
-        plt.savefig(f"{data.object_name}_errorbar_plot_{outfile_tag}.png", dpi=300, bbox_inches="tight")
+        plt.savefig(f"{data.object_name}_errorbar_plot_{outfile_tag}.png",
+                    dpi=300, bbox_inches="tight")
     if show:
         plt.show()
     else:
         plt.close(fig)
 
     return fig
-
-
-@np.vectorize
-def _gauss_ln(x, mu, sigma):
-    """Vectorised log-pdf of a 1-D Gaussian N(μ,σ)."""
-    var = sigma * sigma
-    return -0.5 * ((x - mu) ** 2 / var + _LN_2PI + np.log(var))

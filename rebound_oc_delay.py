@@ -7,7 +7,7 @@ def collision_print_only(sim_pointer, collision):
 
 def simulate_oc_delay(
     m1, m2, system_inclination_deg, times_of_p, periods, eccentricities,
-    omegas_deg, masses, incs, mintimes, return_pos=False, integrator="IAS15",
+    omegas_deg, masses, incs, mintimes, return_pos=False, integrator="IAS15", ias15_accuracy=1e-8
 ):
     """
     Simulate the system to calculate O-C delays. Optionally compute positions for all objects for visualization.
@@ -30,16 +30,16 @@ def simulate_oc_delay(
         dict (optional): Positions of all objects if `gif=True`.
     """
 
-    # print("m1", m1)
-    # print("m2", m2)
-    # print("p",periods)
-    # print("e",eccentricities)
-    # print("o",omegas_deg)
-    # print("m",masses)
-    # print("i",incs)
-    # print("t",times_of_p)
+    print("m1", m1)
+    print("m2", m2)
+    print("p",periods)
+    print("e",eccentricities)
+    print("o",omegas_deg)
+    print("m",masses)
+    print("i",incs)
+    print("t",times_of_p)
     # print(mintimes)
-    # print(integrator)
+    print(integrator)
 
     ecc = np.asarray(eccentricities)
     if np.any((ecc < 0) | (ecc > 1)):
