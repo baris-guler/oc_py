@@ -1,50 +1,77 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Union, List, Dict, Tuple
+from typing import Optional, Union, List, Dict, Tuple, Callable
 from typing_extensions import Self
 
-from astropy.time import Time, TimeDelta
+import numpy as np
+import pandas as pd
 from numpy._typing import NDArray
 
-from ocpy.types import BinarySeq, ArrayReducer, OC
+from ocpy.custom_types import BinarySeq, ArrayReducer
 
 
 class DataModel(ABC):
     @abstractmethod
-    def __init__(self, minimum_time: Time, minimum_time_error: Optional[TimeDelta] = None,
-                 weights: Optional[List] = None, minimum_type: BinarySeq = None,
-                 labels: Optional[List] = None) -> None:
+    def __init__(
+        self,
+        minimum_time: List,
+        minimum_time_error: Optional[List] = None,
+        weights: Optional[List] = None,
+        minimum_type: Optional[BinarySeq] = None,
+        labels: Optional[List] = None,
+        ecorr: Optional[List] = None,
+        oc: Optional[List] = None,
+    ) -> None:
         """Constructor method of data class"""
 
     @abstractmethod
-    def __getitem__(self, item) -> Self:
+    def __getitem__(self, item) -> Union[Self, pd.Series]:
         """Get item works"""
 
     @classmethod
     @abstractmethod
-    def from_file(cls, file: Union[str, Path], columns: Optional[Dict] = None) -> Self:
+    def from_file(cls, file: Union[str, Path], columns: Optional[Dict[str, str]] = None) -> Self:
         """Read data from file"""
 
     @abstractmethod
-    def fill_errors(self, errors: Union[List, Tuple, NDArray], override: bool = False) -> None:
+    def fill_errors(self, errors: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
         """Fills th errors"""
 
     @abstractmethod
-    def fill_weights(self, weights: Union[List, Tuple, NDArray], override: bool = False) -> None:
+    def fill_weights(self, weights: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
         """Fills th weights"""
 
     @abstractmethod
-    def bin(self, bin_count: int = 1, smart_bin_period: Optional[float] = None,
-            method: Optional[ArrayReducer] = None) -> Self:
+    def calculate_weights(
+        self,
+        method: Optional[Callable[[pd.Series], pd.Series]] = None,
+        override: bool = True
+    ) -> Self:
+        """Calculates weights using errors"""
+
+    @staticmethod
+    @abstractmethod
+    def _equal_bins(data_dataframe: pd.DataFrame, bin_count: int) -> np.ndarray:
+        """Produce equal-length bins on ecorr"""
+
+    @abstractmethod
+    def bin(
+        self,
+        bin_count: int = 1,
+        bin_method: Optional[ArrayReducer] = None,
+        bin_error_method: Optional[ArrayReducer] = None,
+        bin_style: Optional[Callable[[pd.DataFrame, int], np.ndarray]] = None
+    ) -> Self:
         """Bins the data and returns each a new Self"""
 
     @abstractmethod
-    def oc(self, period: Time, minimum: Optional[Time] = None) -> OC:
+    def calculate_oc(self, p0: float, t0: float) -> Self:
         """Calculates the O-C for this Data"""
 
     @abstractmethod
-    def merge(self, data: Self) -> None:
+    def merge(self, data: Self) -> Self:
         """Appends data to this DataModel"""
 
+    @abstractmethod
     def group_by(self, column: Union[str, int]) -> List[Self]:
         """Group data by column's data"""
