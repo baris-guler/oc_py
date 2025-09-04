@@ -1,7 +1,6 @@
 from pathlib import Path
-from typing import Union, Optional, Dict, List, Tuple, Literal, Callable
+from typing import Union, Optional, Dict, List, Tuple, Callable
 
-from astropy.table import QTable
 from numpy._typing import NDArray
 from typing_extensions import Self
 
@@ -108,7 +107,7 @@ class Data(DataModel):
     def fill_errors(self, errors: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
         # Eğer Liste verildiyse ve override değilse sadece listedeki o element için işlem yapıyor böyle mi olmalı emin değilim
         new_data = deepcopy(self)
-        td_error_series = new_data.data["minimum_time_error"] 
+        data_error = new_data.data["minimum_time_error"] 
 
         if isinstance(errors, (list, tuple, np.ndarray)):
             if len(errors) != len(new_data.data):
@@ -118,12 +117,12 @@ class Data(DataModel):
            new_data.data["minimum_time_error"] = errors
         else:
             mask = pd.isna(new_data.data["minimum_time_error"])
-            new_data.data["minimum_time_error"] = td_error_series.where(~mask, errors)
+            new_data.data["minimum_time_error"] = data_error.where(~mask, errors)
         return new_data
     
     def fill_weights(self, weights: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
         new_data = deepcopy(self)
-        td_error_series = new_data.data["weights"] 
+        data_error = new_data.data["weights"] 
 
         if isinstance(weights, (list, tuple, np.ndarray)):
             if len(weights) != len(new_data.data):
@@ -133,7 +132,7 @@ class Data(DataModel):
            new_data.data["weights"] = weights
         else:
             mask = pd.isna(new_data.data["weights"])
-            new_data.data["weights"] = td_error_series.where(~mask, weights)
+            new_data.data["weights"] = data_error.where(~mask, weights)
         return new_data
     
     def calculate_weights(self, method: Callable[[pd.Series], pd.Series] = None, override: bool = True) -> Self:
@@ -220,12 +219,12 @@ class Data(DataModel):
         if int(bin_count) > len(bins):
             lacking_bins = int(bin_count - len(bins))
             lens = (bins[:, 1] - bins[:, 0]).astype(float)
-            w = lens / np.sum(lens) * lacking_bins
-            add_counts = w.astype(int)
+            weights = lens / np.sum(lens) * lacking_bins
+            add_counts = weights.astype(int)
             remainder = lacking_bins - int(np.sum(add_counts))
 
             if remainder > 0:
-                rema = w % 1.0
+                rema = weights % 1.0
                 top = np.argsort(-rema)[:remainder]
                 add_counts[top] += 1
 
@@ -250,7 +249,7 @@ class Data(DataModel):
             bin_count: int = 1,
             bin_method: Optional[ArrayReducer] = None,
             bin_error_method: Optional[ArrayReducer] = None,
-            bin_style: Optional[Callable[..., np.ndarray]] = None) -> Self:
+            bin_style: Optional[Callable[[pd.DataFrame, int], np.ndarray]] = None) -> Self:
         
         def mean_binner(array: NDArray, weights: NDArray) -> float:
             return float(np.average(array, weights=weights))
@@ -331,9 +330,6 @@ class Data(DataModel):
         return new_data
 
     def merge(self, data: Self) -> Self:
-        # Bunu bir class method yapıp çoklu data birleştirmeyi sağlayabiliriz
-        # merge(cls, *datas) -> Self
-
         new_data = deepcopy(self)
         new_data.data = pd.concat([self.data, data.data], ignore_index=True, sort=False)
         return new_data
