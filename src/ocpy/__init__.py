@@ -1,1 +1,1 @@
-from .data_example import DataExample
+from .data import Data

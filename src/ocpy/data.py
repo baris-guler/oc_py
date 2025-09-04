@@ -156,20 +156,102 @@ class Data(DataModel):
         if method is None:
             method = inverse_variance_weights
 
-        w = method(minimum_time_error)
+        weights = method(minimum_time_error)
 
         if override or "weights" not in new_data.data:
-            new_data.data["weights"] = w
+            new_data.data["weights"] = weights
         else:
             new_data.data["weights"] = new_data.data["weights"].where(
-                ~new_data.data["weights"].isna(), w
+                ~new_data.data["weights"].isna(), weights
             )
 
         return new_data
 
-    def bin(self, bin_count: int = 1, smart_bin_period: Optional[float] = None,
-            bin_method: Optional[ArrayReducer] = None, bin_error_method: Optional[ArrayReducer] = None) -> Self:
+    @staticmethod
+    def _equal_bins(data_dataframe: pd.DataFrame, bin_count: int) -> np.ndarray:
+        ecorr_vals = data_dataframe["ecorr"].to_numpy(dtype=float)
+        ecorr_min = float(np.min(ecorr_vals))
+        ecorr_max = float(np.max(ecorr_vals))
 
+        bins = np.empty((0, 2), dtype=float)
+        total_span = ecorr_max - ecorr_min
+        bin_length = total_span / max(1, int(bin_count))
+
+        for k in range(int(bin_count)):
+            start = ecorr_min + k * bin_length
+            end = ecorr_min + (k + 1) * bin_length if k < bin_count - 1 else ecorr_max
+            bins = np.vstack([bins, np.array([[start, end]], dtype=float)])
+
+        return bins
+
+
+    @staticmethod
+    def _smart_bins(data_dataframe: pd.DataFrame, bin_count: int, smart_bin_period: float = 50) -> np.ndarray:
+        if smart_bin_period is None or smart_bin_period <= 0:
+            raise ValueError("smart_bin_period must be a positive number for _smart_bins")
+
+        df_sorted = data_dataframe.sort_values(by="ecorr")
+        ecorr_vals = df_sorted["ecorr"].to_numpy(dtype=float)
+        ecorr_min = float(np.min(ecorr_vals))
+        ecorr_max = float(np.max(ecorr_vals))
+
+        bins = np.empty((0, 2), dtype=float)
+        bin_start = ecorr_min
+
+        gaps = np.diff(ecorr_vals)
+        big_gaps = gaps > smart_bin_period
+        gap_indexes = np.where(big_gaps)[0]
+
+        for i in gap_indexes:
+            bins = np.vstack([bins, np.array([[bin_start, float(ecorr_vals[i])]], dtype=float)])
+            bin_start = float(ecorr_vals[i + 1])
+
+        bins = np.vstack([bins, np.array([[bin_start, ecorr_max]], dtype=float)])
+
+        target_bin_count = int(max(1, bin_count))
+
+        if len(bins) > target_bin_count:
+            while len(bins) > target_bin_count:
+                inter_gaps = bins[1:, 0] - bins[:-1, 1]
+                merge_pos = int(np.argmin(inter_gaps))
+                merged_segment = np.array([[bins[merge_pos, 0], bins[merge_pos + 1, 1]]], dtype=float)
+                bins = np.vstack([bins[:merge_pos], merged_segment, bins[merge_pos + 2:]])
+
+        if int(bin_count) > len(bins):
+            lacking_bins = int(bin_count - len(bins))
+            lens = (bins[:, 1] - bins[:, 0]).astype(float)
+            w = lens / np.sum(lens) * lacking_bins
+            add_counts = w.astype(int)
+            remainder = lacking_bins - int(np.sum(add_counts))
+
+            if remainder > 0:
+                rema = w % 1.0
+                top = np.argsort(-rema)[:remainder]
+                add_counts[top] += 1
+
+            new_bins = np.empty((0, 2), dtype=float)
+
+            for i, (start, end) in enumerate(bins):
+                k = int(add_counts[i])
+
+                if k <= 0:
+                    new_bins = np.vstack([new_bins, np.array([[start, end]], dtype=float)])
+                else:
+                    edges = np.linspace(start, end, k + 2)
+                    segs = np.column_stack([edges[:-1], edges[1:]])
+                    new_bins = np.vstack([new_bins, segs])
+
+            bins = new_bins
+
+        return bins
+
+
+    def bin(self,
+            bin_count: int = 1,
+            bin_method: Optional[ArrayReducer] = None,
+            bin_error_method: Optional[ArrayReducer] = None,
+            bin_style: Optional[Callable[..., np.ndarray]] = None) -> Self:
+        
         def mean_binner(array: NDArray, weights: NDArray) -> float:
             return float(np.average(array, weights=weights))
 
@@ -178,78 +260,42 @@ class Data(DataModel):
 
         if self.data["weights"].hasnans:
             raise ValueError("`weights` contain NaN values")
+
         if self.data["ecorr"].hasnans:
             raise ValueError("`ecorr` contain Nan values")
-        
+
         new_data = deepcopy(self)
 
         if bin_method is None:
             bin_method = mean_binner
+
         if bin_error_method is None:
             bin_error_method = error_binner
 
-        bins = np.empty((0, 2), dtype=float)
-        ec_min = float(np.min(new_data.data["ecorr"]))
-        ec_max = float(np.max(new_data.data["ecorr"]))
-        bin_start = ec_min
-
-        if smart_bin_period is None:
-            total_span = ec_max - ec_min
-            bin_length = total_span / max(1, int(bin_count))
-            for k in range(int(bin_count)):
-                start = ec_min + k * bin_length
-                end = ec_min + (k + 1) * bin_length if k < bin_count - 1 else ec_max
-                bins = np.vstack([bins, np.array([[start, end]], dtype=float)])
+        if (bin_style is None):
+            bins = self._equal_bins(new_data.data, int(bin_count))
         else:
-            # Smart bin aralarında boşluk olan verileri ayrı ayrı binlemeye yarıyor
-            # Bu boşluğun periyotu smart bin period ile belirleniyor
-            # Bu bilimsel bir yöntem değil ama gerekli, başka bir fonksiyona ayrılmalı mı bilemedim
-            new_data.data = new_data.data.sort_values(by="ecorr")
-            gaps = np.diff(new_data.data["ecorr"])
-            big_gaps = gaps > smart_bin_period
-            gap_indexes = np.where(big_gaps)[0]
+            bins = bin_style(new_data.data, int(bin_count))
 
-            for i in gap_indexes:
-                bins = np.vstack([bins, np.array([[bin_start, float(new_data.data["ecorr"][i])]], dtype=float)])
-                bin_start = float(new_data.data["ecorr"][i + 1])
-
-            bins = np.vstack([bins, np.array([[bin_start, ec_max]], dtype=float)])
-
-            if bin_count > len(bins):
-                lacking_bins = int(bin_count - len(bins))
-                lens = (bins[:, 1] - bins[:, 0]).astype(float)
-                weights = lens / np.sum(lens) * lacking_bins
-                add_counts = weights.astype(int)
-                remainder = lacking_bins - int(np.sum(add_counts))
-                if remainder > 0:
-                    rema = weights % 1.0
-                    top = np.argsort(-rema)[:remainder]
-                    add_counts[top] += 1
-
-                new_bins = np.empty((0, 2), dtype=float)
-                for i, (start, end) in enumerate(bins):
-                    w = int(add_counts[i])
-                    if w <= 0:
-                        new_bins = np.vstack([new_bins, np.array([[start, end]], dtype=float)])
-                    else:
-                        edges = np.linspace(start, end, w + 2)
-                        segs = np.column_stack([edges[:-1], edges[1:]])
-                        new_bins = np.vstack([new_bins, segs])
-                bins = new_bins
-
-        binned_ecorrs = []
-        binned_ocs = []
-        binned_errors = []
+        binned_ecorrs: list[float] = []
+        binned_ocs: list[float] = []
+        binned_errors: list[float] = []
 
         n_bins = len(bins)
+
         for i, (start, end) in enumerate(bins):
-            mask = (new_data.data["ecorr"] >= start) & (new_data.data["ecorr"] < end) if i < n_bins - 1 else (new_data.data["ecorr"] >= start) & (new_data.data["ecorr"] <= end)
+            if i < n_bins - 1:
+                mask = (new_data.data["ecorr"] >= start) & (new_data.data["ecorr"] < end)
+            else:
+                mask = (new_data.data["ecorr"] >= start) & (new_data.data["ecorr"] <= end)
+
             if not np.any(mask):
                 continue
-            w = new_data.data["weights"][mask]
-            binned_ecorrs.append(bin_method(new_data.data["ecorr"][mask], w))
-            binned_ocs.append(bin_method(new_data.data["oc"][mask], w))
-            binned_errors.append(bin_error_method(w))
+
+            weights = new_data.data["weights"][mask]
+            binned_ecorrs.append(bin_method(new_data.data["ecorr"][mask], weights))
+            binned_ocs.append(bin_method(new_data.data["oc"][mask], weights))
+            binned_errors.append(bin_error_method(weights))
 
         new_data_df = pd.DataFrame()
         new_data_df["minimum_time"] = np.nan
@@ -263,22 +309,22 @@ class Data(DataModel):
         new_data.data = new_data_df
 
         return new_data
-    
-    def calculate_oc(self, p0: float, t0: float) -> Self:
+        
+    def calculate_oc(self, reference_period: float, reference_minimum: float) -> Self:
         new_data = deepcopy(self)
 
-        mt  = np.asarray(new_data.data["minimum_time"], dtype=float)
-        mty = np.asarray(new_data.data["minimum_type"], dtype=int)
+        minimum_time  = np.asarray(new_data.data["minimum_time"], dtype=float)
+        minimum_type = np.asarray(new_data.data["minimum_type"], dtype=int)
 
-        epoch = (mt - float(t0)) / float(p0)
+        epoch = (minimum_time - float(reference_minimum)) / float(reference_period)
 
         ecorr = epoch.copy()
-        m0 = (mty == 0)
-        m1 = (mty == 1)
-        ecorr[m0] = np.rint(ecorr[m0])
-        ecorr[m1] = np.floor(ecorr[m1]) + 0.5
+        minimum0 = (minimum_type == 0)
+        minimum1 = (minimum_type == 1)
+        ecorr[minimum0] = np.rint(ecorr[minimum0])
+        ecorr[minimum1] = np.floor(ecorr[minimum1]) + 0.5
 
-        oc = mt - (ecorr * float(p0) + float(t0))
+        oc = minimum_time - (ecorr * float(reference_period) + float(reference_minimum))
 
         new_data.data.loc[:, "ecorr"] = ecorr
         new_data.data.loc[:, "oc"]    = oc
@@ -287,8 +333,6 @@ class Data(DataModel):
     def merge(self, data: Self) -> Self:
         # Bunu bir class method yapıp çoklu data birleştirmeyi sağlayabiliriz
         # merge(cls, *datas) -> Self
-        if not isinstance(data, Data):
-            raise TypeError("merge expects a Data instance")
 
         new_data = deepcopy(self)
         new_data.data = pd.concat([self.data, data.data], ignore_index=True, sort=False)
