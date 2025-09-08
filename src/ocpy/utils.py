@@ -1,3 +1,5 @@
+import numpy as np
+
 from ocpy.errors import LengthCheckError
 
 
@@ -19,3 +21,7 @@ class Fixer:
             return data
         else:
             return [data] * len(reference)
+
+    @staticmethod
+    def none_to_nan(data_frame):
+        return data_frame.replace({None: np.nan})
