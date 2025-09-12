@@ -18,13 +18,13 @@ import warnings
 
 class Data(DataModel):
     def __init__(
-        self, minimum_time: List,
-        minimum_time_error: Optional[List] = None,
-        weights: Optional[List] = None,
-        minimum_type: Optional[BinarySeq] = None,
-        labels: Optional[List] = None,
-        ecorr: Optional[List] = None,
-        oc: Optional[List] = None,
+            self, minimum_time: List,
+            minimum_time_error: Optional[List] = None,
+            weights: Optional[List] = None,
+            minimum_type: Optional[BinarySeq] = None,
+            labels: Optional[List] = None,
+            ecorr: Optional[List] = None,
+            oc: Optional[List] = None,
     ) -> None:
         fixed_minimum_time_error = Fixer.length_fixer(minimum_time_error, minimum_time)
         fixed_weights = Fixer.length_fixer(weights, minimum_time)
@@ -32,7 +32,6 @@ class Data(DataModel):
         fixed_labels_to = Fixer.length_fixer(labels, minimum_time)
         fixed_ecorr = Fixer.length_fixer(ecorr, minimum_time)
         fixed_oc = Fixer.length_fixer(oc, minimum_time)
-
 
         self.data = pd.DataFrame(
             {
@@ -49,12 +48,12 @@ class Data(DataModel):
     def __str__(self) -> str:
         return self.data.__str__()
 
-    def __getitem__(self, item) -> Self:
+    def __getitem__(self, item) -> Union[Self, pd.Series]:
         if isinstance(item, str):
-            # str ise pd.series döndürüyor ne yapsam bilemedim
+            # str ise pd.series döndürüyor ne yapsam bilemedim. Bunu konuşalım...
             return self.data[item]
         elif isinstance(item, int):
-            row = self.data.iloc[item] 
+            row = self.data.iloc[item]
             return Data(
                 minimum_time=[row["minimum_time"]],
                 minimum_time_error=[row["minimum_time_error"]],
@@ -76,9 +75,12 @@ class Data(DataModel):
                 ecorr=filtered_table["ecorr"],
                 oc=filtered_table["oc"]
             )
-        
+
     def __setitem__(self, key, value) -> None:
         self.data.loc[:, key] = value
+
+    def __len__(self) -> int:
+        return len(self.data)
 
     @classmethod
     def from_file(cls, file: Union[str, Path], columns: Optional[Dict[str, str]] = None) -> Self:
@@ -104,50 +106,43 @@ class Data(DataModel):
 
         return cls(**kwargs)
 
-    def fill_errors(self, errors: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
-        # Eğer Liste verildiyse ve override değilse sadece listedeki o element için işlem yapıyor böyle mi olmalı emin değilim
-        new_data = deepcopy(self)
-        data_error = new_data.data["minimum_time_error"] 
-
-        if isinstance(errors, (list, tuple, np.ndarray)):
-            if len(errors) != len(new_data.data):
-                raise LengthCheckError("Length of `errors` must be equal to the length of the data")
-
-        if override:
-           new_data.data["minimum_time_error"] = errors
+    def _assign_or_fill(self, df: pd.DataFrame, col: str, values, override: bool) -> None:
+        """
+        If override=True or column doesn't exist, assign values directly.
+        Otherwise, fill only where existing entries are NaN.
+        """
+        if override or col not in df.columns:
+            df[col] = values
         else:
-            mask = pd.isna(new_data.data["minimum_time_error"])
-            new_data.data["minimum_time_error"] = data_error.where(~mask, errors)
-        return new_data
-    
-    def fill_weights(self, weights: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
+            base = df[col]
+            df[col] = base.where(~pd.isna(base), values)
+
+    def fill_errors(self, errors: Union[List, Tuple, np.ndarray, float], override: bool = False) -> Self:
         new_data = deepcopy(self)
-        data_error = new_data.data["weights"] 
-
-        if isinstance(weights, (list, tuple, np.ndarray)):
-            if len(weights) != len(new_data.data):
-                raise LengthCheckError("Length of `weights` must be equal to the length of the data")
-
-        if override:
-           new_data.data["weights"] = weights
-        else:
-            mask = pd.isna(new_data.data["weights"])
-            new_data.data["weights"] = data_error.where(~mask, weights)
+        if isinstance(errors, (list, tuple, np.ndarray)) and len(errors) != len(new_data.data):
+            raise LengthCheckError("Length of `errors` must be equal to the length of the data")
+        self.__assign_or_fill(new_data.data, "minimum_time_error", errors, override)
         return new_data
-    
+
+    def fill_weights(self, weights: Union[List, Tuple, np.ndarray, float], override: bool = False) -> Self:
+        new_data = deepcopy(self)
+        if isinstance(weights, (list, tuple, np.ndarray)) and len(weights) != len(new_data.data):
+            raise LengthCheckError("Length of `weights` must be equal to the length of the data")
+        self.__assign_or_fill(new_data.data, "weights", weights, override)
+        return new_data
+
     def calculate_weights(self, method: Callable[[pd.Series], pd.Series] = None, override: bool = True) -> Self:
         def inverse_variance_weights(err_days: pd.Series) -> pd.Series:
             with np.errstate(divide="ignore", invalid="ignore"):
                 return 1.0 / np.square(err_days)
-            
-        new_data = deepcopy(self)
 
+        new_data = deepcopy(self)
         minimum_time_error = new_data.data["minimum_time_error"]
 
-        if minimum_time_error.hasnans: 
-            warnings.warn(f"minimum_time_error contains NaN value(s)")
+        if minimum_time_error.hasnans:
+            raise ValueError("minimum_time_error contains NaN value(s)")
         if (minimum_time_error == 0).any():
-            warnings.warn(f"minimum_time_error contains `0`")
+            raise ValueError("minimum_time_error contains `0`")
 
         if method is not None and not callable(method):
             raise TypeError("`method` must be callable or None for inverse variance weights")
@@ -156,14 +151,7 @@ class Data(DataModel):
             method = inverse_variance_weights
 
         weights = method(minimum_time_error)
-
-        if override or "weights" not in new_data.data:
-            new_data.data["weights"] = weights
-        else:
-            new_data.data["weights"] = new_data.data["weights"].where(
-                ~new_data.data["weights"].isna(), weights
-            )
-
+        self.__assign_or_fill(new_data.data, "weights", weights, override)
         return new_data
 
     @staticmethod
@@ -182,7 +170,6 @@ class Data(DataModel):
             bins = np.vstack([bins, np.array([[start, end]], dtype=float)])
 
         return bins
-
 
     @staticmethod
     def _smart_bins(data_dataframe: pd.DataFrame, bin_count: int, smart_bin_period: float = 50) -> np.ndarray:
@@ -244,13 +231,12 @@ class Data(DataModel):
 
         return bins
 
-
     def bin(self,
             bin_count: int = 1,
             bin_method: Optional[ArrayReducer] = None,
             bin_error_method: Optional[ArrayReducer] = None,
             bin_style: Optional[Callable[[pd.DataFrame, int], np.ndarray]] = None) -> Self:
-        
+
         def mean_binner(array: NDArray, weights: NDArray) -> float:
             return float(np.average(array, weights=weights))
 
@@ -308,12 +294,15 @@ class Data(DataModel):
         new_data.data = new_data_df
 
         return new_data
-        
+
     def calculate_oc(self, reference_period: float, reference_minimum: float) -> Self:
         new_data = deepcopy(self)
 
-        minimum_time  = np.asarray(new_data.data["minimum_time"], dtype=float)
-        minimum_type = np.asarray(new_data.data["minimum_type"], dtype=int)
+        minimum_time = np.asarray(new_data.data["minimum_time"], dtype=float)
+
+        if pd.isna(new_data.data["minimum_type"]).any():
+            warnings.warn("minimum_type contains None/NaN values. They will be treated as type 1.")
+        minimum_type = pd.Series(new_data.data["minimum_type"]).replace({None: 0}).fillna(0).astype(int).to_numpy()
 
         epoch = (minimum_time - float(reference_minimum)) / float(reference_period)
 
@@ -326,7 +315,7 @@ class Data(DataModel):
         oc = minimum_time - (ecorr * float(reference_period) + float(reference_minimum))
 
         new_data.data.loc[:, "ecorr"] = ecorr
-        new_data.data.loc[:, "oc"]    = oc
+        new_data.data.loc[:, "oc"] = oc
         return new_data
 
     def merge(self, data: Self) -> Self:
@@ -334,26 +323,20 @@ class Data(DataModel):
         new_data.data = pd.concat([self.data, data.data], ignore_index=True, sort=False)
         return new_data
 
+    def group_by(self, column: str) -> List["Data"]:
+        if column not in self.data.columns:
+            return [deepcopy(self)]
 
-    def group_by(self, column: Union[str, int]) -> List[Self]:
-        if isinstance(column, int):
-            column = self.data.columns[column]
+        s = self.data[column]
 
-        grouped = self.data.groupby(column)
-        result: List[Data] = []
+        if s.isna().all():
+            return [deepcopy(self)]
 
-        for _, group in grouped:
-            result.append(
-                Data(
-                    minimum_time=group["minimum_time"],
-                    minimum_time_error=group["minimum_time_error"],
-                    weights=group["weights"],
-                    minimum_type=group["minimum_type"],
-                    labels=group["labels"],
-                    ecorr=group["ecorr"],
-                    oc=group["oc"]
-                )
-            )
+        groups: List["Data"] = []
 
-        return result
+        for _, df_group in self.data.groupby(s, dropna=False):
+            new_obj = deepcopy(self)
+            new_obj.data = df_group.copy()
+            groups.append(new_obj)
 
+        return groups
