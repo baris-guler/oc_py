@@ -106,35 +106,29 @@ class Data(DataModel):
 
         return cls(**kwargs)
 
-    def fill_errors(self, errors: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
-        # Eğer Liste verildiyse ve override değilse sadece listedeki o element için işlem yapıyor böyle mi olmalı emin değilim
-        new_data = deepcopy(self)
-        data_error = new_data.data["minimum_time_error"]
-
-        if isinstance(errors, (list, tuple, np.ndarray)):
-            if len(errors) != len(new_data.data):
-                raise LengthCheckError("Length of `errors` must be equal to the length of the data")
-
-        if override:
-            new_data.data["minimum_time_error"] = errors
+    def _assign_or_fill(self, df: pd.DataFrame, col: str, values, override: bool) -> None:
+        """
+        If override=True or column doesn't exist, assign values directly.
+        Otherwise, fill only where existing entries are NaN.
+        """
+        if override or col not in df.columns:
+            df[col] = values
         else:
-            mask = pd.isna(new_data.data["minimum_time_error"])
-            new_data.data["minimum_time_error"] = data_error.where(~mask, errors)
+            base = df[col]
+            df[col] = base.where(~pd.isna(base), values)
+
+    def fill_errors(self, errors: Union[List, Tuple, np.ndarray, float], override: bool = False) -> Self:
+        new_data = deepcopy(self)
+        if isinstance(errors, (list, tuple, np.ndarray)) and len(errors) != len(new_data.data):
+            raise LengthCheckError("Length of `errors` must be equal to the length of the data")
+        self.__assign_or_fill(new_data.data, "minimum_time_error", errors, override)
         return new_data
 
-    def fill_weights(self, weights: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
+    def fill_weights(self, weights: Union[List, Tuple, np.ndarray, float], override: bool = False) -> Self:
         new_data = deepcopy(self)
-        data_error = new_data.data["weights"]
-
-        if isinstance(weights, (list, tuple, np.ndarray)):
-            if len(weights) != len(new_data.data):
-                raise LengthCheckError("Length of `weights` must be equal to the length of the data")
-
-        if override:
-            new_data.data["weights"] = weights
-        else:
-            mask = pd.isna(new_data.data["weights"])
-            new_data.data["weights"] = data_error.where(~mask, weights)
+        if isinstance(weights, (list, tuple, np.ndarray)) and len(weights) != len(new_data.data):
+            raise LengthCheckError("Length of `weights` must be equal to the length of the data")
+        self.__assign_or_fill(new_data.data, "weights", weights, override)
         return new_data
 
     def calculate_weights(self, method: Callable[[pd.Series], pd.Series] = None, override: bool = True) -> Self:
@@ -143,13 +137,12 @@ class Data(DataModel):
                 return 1.0 / np.square(err_days)
 
         new_data = deepcopy(self)
-
         minimum_time_error = new_data.data["minimum_time_error"]
 
         if minimum_time_error.hasnans:
-            warnings.warn(f"minimum_time_error contains NaN value(s)")
+            raise ValueError("minimum_time_error contains NaN value(s)")
         if (minimum_time_error == 0).any():
-            warnings.warn(f"minimum_time_error contains `0`")
+            raise ValueError("minimum_time_error contains `0`")
 
         if method is not None and not callable(method):
             raise TypeError("`method` must be callable or None for inverse variance weights")
@@ -158,14 +151,7 @@ class Data(DataModel):
             method = inverse_variance_weights
 
         weights = method(minimum_time_error)
-
-        if override or "weights" not in new_data.data:
-            new_data.data["weights"] = weights
-        else:
-            new_data.data["weights"] = new_data.data["weights"].where(
-                ~new_data.data["weights"].isna(), weights
-            )
-
+        self.__assign_or_fill(new_data.data, "weights", weights, override)
         return new_data
 
     @staticmethod
@@ -313,7 +299,10 @@ class Data(DataModel):
         new_data = deepcopy(self)
 
         minimum_time = np.asarray(new_data.data["minimum_time"], dtype=float)
-        minimum_type = np.asarray(new_data.data["minimum_type"], dtype=int)
+
+        if pd.isna(new_data.data["minimum_type"]).any():
+            warnings.warn("minimum_type contains None/NaN values. They will be treated as type 1.")
+        minimum_type = pd.Series(new_data.data["minimum_type"]).replace({None: 0}).fillna(0).astype(int).to_numpy()
 
         epoch = (minimum_time - float(reference_minimum)) / float(reference_period)
 
@@ -334,24 +323,20 @@ class Data(DataModel):
         new_data.data = pd.concat([self.data, data.data], ignore_index=True, sort=False)
         return new_data
 
-    def group_by(self, column: Union[str, int]) -> List[Self]:
-        if isinstance(column, int):
-            column = self.data.columns[column]
+    def group_by(self, column: str) -> List["Data"]:
+        if column not in self.data.columns:
+            return [deepcopy(self)]
 
-        grouped = self.data.groupby(column)
-        result: List[Data] = []
+        s = self.data[column]
 
-        for _, group in grouped:
-            result.append(
-                Data(
-                    minimum_time=group["minimum_time"],
-                    minimum_time_error=group["minimum_time_error"],
-                    weights=group["weights"],
-                    minimum_type=group["minimum_type"],
-                    labels=group["labels"],
-                    ecorr=group["ecorr"],
-                    oc=group["oc"]
-                )
-            )
+        if s.isna().all():
+            return [deepcopy(self)]
 
-        return result
+        groups: List["Data"] = []
+
+        for _, df_group in self.data.groupby(s, dropna=False):
+            new_obj = deepcopy(self)
+            new_obj.data = df_group.copy()
+            groups.append(new_obj)
+
+        return groups
