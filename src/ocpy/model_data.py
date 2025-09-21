@@ -34,6 +34,10 @@ class DataModel(ABC):
         """Read data from file"""
 
     @abstractmethod
+    def _assign_or_fill(self, df: pd.DataFrame, col: str, values, override: bool) -> None:
+        """Assign new values to given col's"""
+
+    @abstractmethod
     def fill_errors(self, errors: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:
         """Fills th errors"""
 
@@ -65,7 +69,7 @@ class DataModel(ABC):
         """Bins the data and returns each a new Self"""
 
     @abstractmethod
-    def calculate_oc(self, p0: float, t0: float) -> Self:
+    def calculate_oc(self, reference_period: float, reference_minimum: float) -> Self:
         """Calculates the O-C for this Data"""
 
     @abstractmethod
