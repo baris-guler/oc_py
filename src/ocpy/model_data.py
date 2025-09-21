@@ -36,11 +36,6 @@ class DataModel(ABC):
     @abstractmethod
     def _assign_or_fill(self, df: pd.DataFrame, col: str, values, override: bool) -> None:
         """Assign new values to given col's"""
-        if override or col not in df.columns:
-            df[col] = values
-        else:
-            base = df[col]
-            df[col] = base.where(~pd.isna(base), values)
 
     @abstractmethod
     def fill_errors(self, errors: Union[List, Tuple, NDArray, float], override: bool = False) -> Self:

@@ -121,14 +121,14 @@ class Data(DataModel):
         new_data = deepcopy(self)
         if isinstance(errors, (list, tuple, np.ndarray)) and len(errors) != len(new_data.data):
             raise LengthCheckError("Length of `errors` must be equal to the length of the data")
-        self.__assign_or_fill(new_data.data, "minimum_time_error", errors, override)
+        self._assign_or_fill(new_data.data, "minimum_time_error", errors, override)
         return new_data
 
     def fill_weights(self, weights: Union[List, Tuple, np.ndarray, float], override: bool = False) -> Self:
         new_data = deepcopy(self)
         if isinstance(weights, (list, tuple, np.ndarray)) and len(weights) != len(new_data.data):
             raise LengthCheckError("Length of `weights` must be equal to the length of the data")
-        self.__assign_or_fill(new_data.data, "weights", weights, override)
+        self._assign_or_fill(new_data.data, "weights", weights, override)
         return new_data
 
     def calculate_weights(self, method: Callable[[pd.Series], pd.Series] = None, override: bool = True) -> Self:
@@ -151,7 +151,7 @@ class Data(DataModel):
             method = inverse_variance_weights
 
         weights = method(minimum_time_error)
-        self.__assign_or_fill(new_data.data, "weights", weights, override)
+        self._assign_or_fill(new_data.data, "weights", weights, override)
         return new_data
 
     @staticmethod
