@@ -1,3 +1,4 @@
+from random import random
 import tempfile
 from unittest import TestCase
 
@@ -177,25 +178,28 @@ class TestData(TestCase):
         )
 
     def test_calculate_weights(self):
-        new_data = self.DATA.fill_errors(2)
-        new_weights = new_data.calculate_weights()
-        self.assertListEqual(sum([each for each in new_weights]), [np.sqrt(2)] * len(self.DATA))
+        the_error = random() * 2
+        new_data = self.DATA.fill_errors(the_error)
+        new_weighted_data = new_data.calculate_weights()
+        self.assertEqual(new_weighted_data["weights"].sum(), sum([1/np.pow(the_error, 2)] * len(new_data)))
 
     def test_calculate_weight_with_no_error(self):
         with self.assertRaises(ValueError):
             _ = self.DATA.calculate_weights()
 
     def test_calculate_weights_custom_function(self):
+        the_error = random() * 2
+        new_data = self.DATA.fill_errors(the_error)
         def custom_function(data):
             return pd.Series([1] * len(data))
 
-        new_weights = self.DATA.calculate_weights(method=custom_function)
-        self.assertListEqual(sum([each for each in new_weights]), [1] * len(self.DATA))
+        new_weighted_data = new_data.calculate_weights(method=custom_function)
+        self.assertEqual(new_weighted_data["weights"].sum(), len(new_data))
 
     def test_calculate_oc(self):
         oc = self.DATA.calculate_oc(
-            float(self.DATA[0]["minimum_time"]),
-            float(np.mean(np.diff(self.DATA["minimum_time"])))
+            float(np.mean(np.diff(self.DATA["minimum_time"]))),
+            float(self.DATA[0]["minimum_time"])
         )
         self.assertEqual(oc["oc"].sum(), 0)
 
