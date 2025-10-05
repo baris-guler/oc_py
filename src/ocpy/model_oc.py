@@ -1,18 +1,38 @@
 from abc import abstractmethod, ABC
-from pathlib import Path
-from typing import Union, Optional, Dict, Self, Callable, Literal
 
+from typing import Union, Optional, Dict, Self, Callable, List, Any
+from lmfit.model import ModelResult
+
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
 from ocpy.custom_types import ArrayReducer
 
 
+class ParameterModel(ABC):
+    value: float
+    min: float
+    max: float
+    std: float
+    fixed: bool = False
+
+
+class ModelComponentModel(ABC):
+    @abstractmethod
+    def __init__(self, args: Optional[List[ParameterModel]] = None) -> None:
+        """Constructor method"""
+
+    @abstractmethod
+    def model_function(self) -> Any:
+        """Definition of the function to fit"""
+
+
 class OCModel(ABC):
     @classmethod
     @abstractmethod
     def from_file(cls, file: Union[str, Path], columns: Optional[Dict[str, str]] = None) -> Self:
-        """Read OC from file"""
+        """Read data from file"""
 
     @abstractmethod
     def bin(
@@ -22,28 +42,36 @@ class OCModel(ABC):
             bin_error_method: Optional[ArrayReducer] = None,
             bin_style: Optional[Callable[[pd.DataFrame, int], np.ndarray]] = None
     ) -> Self:
-        """Bins the OC and returns each a new Self"""
-
-    @abstractmethod
-    def linear_fit(self, weight: Optional[pd.Series] = None) -> Self:
-        """Fits a linear to OC"""
-
-    @abstractmethod
-    def sinusoidal_fit(self) -> np.array:
-        """Fits a sinusoidal to OC"""
-
-    @abstractmethod
-    def quadratic_fit(self, weight: Optional[pd.Series] = None) -> np.array:
-        """Fits a parabola to OC"""
-
-    @abstractmethod
-    def fit(self, kinds: Literal["linear", "sinusoidal", "quadratic"]) -> np.array:
-        """Fits either a linear, quadratic or sinusoidal to OC"""
-
-    @abstractmethod
-    def residue(self, coefficients: np.array) -> Self:
-        """Calculates the residual of OC from coefficients"""
+        """Bins the data and returns each a new Self"""
 
     @abstractmethod
     def merge(self, oc: Self) -> Self:
-        """Merges the given OC by itself"""
+        """Appends oc to this oc"""
+
+    @abstractmethod
+    def residue(self, coefficients: ModelResult) -> Self:
+        """Removes the fit from current data"""
+
+    @abstractmethod
+    def fit(self, functions: Union[List[ModelComponentModel], ModelComponentModel]) -> ModelResult:
+        """Fits the given ModelComponents to the O-C"""
+
+    @abstractmethod
+    def fit_keplerian(self, parameters: List[ParameterModel]) -> ModelComponentModel:
+        """Makes a keplerian fit (also known as lite)"""
+
+    @abstractmethod
+    def fit_lite(self, parameters: List[ParameterModel]) -> ModelComponentModel:
+        """Makes a lite fit (also known as keplerian fit)"""
+
+    @abstractmethod
+    def fit_linear(self, parameters: List[ParameterModel]) -> ModelComponentModel:
+        """Makes a linear fit"""
+
+    @abstractmethod
+    def fit_quadratic(self, parameters: List[ParameterModel]) -> ModelComponentModel:
+        """Makes a quadratic fit"""
+
+    @abstractmethod
+    def fit_sinusoidal(self, parameters: List[ParameterModel]) -> ModelComponentModel:
+        """Makes a sinusoidal fit"""
