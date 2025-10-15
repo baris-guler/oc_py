@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Union, Optional, Dict, List, Tuple, Callable
+from typing import Union, Optional, Dict, List, Tuple, Callable, Literal
 
 from numpy._typing import NDArray
 from typing_extensions import Self
@@ -14,6 +14,8 @@ from ocpy.utils import Fixer
 
 from .errors import LengthCheckError
 import warnings
+from .oc import OC
+from .oc_lmfit import OCLMFit
 
 
 class Data(DataModel):
@@ -23,15 +25,11 @@ class Data(DataModel):
             weights: Optional[List] = None,
             minimum_type: Optional[BinarySeq] = None,
             labels: Optional[List] = None,
-            ecorr: Optional[List] = None,
-            oc: Optional[List] = None,
     ) -> None:
         fixed_minimum_time_error = Fixer.length_fixer(minimum_time_error, minimum_time)
         fixed_weights = Fixer.length_fixer(weights, minimum_time)
         fixed_minimum_type = Fixer.length_fixer(minimum_type, minimum_time)
         fixed_labels_to = Fixer.length_fixer(labels, minimum_time)
-        fixed_ecorr = Fixer.length_fixer(ecorr, minimum_time)
-        fixed_oc = Fixer.length_fixer(oc, minimum_time)
 
         self.data = pd.DataFrame(
             {
@@ -40,8 +38,6 @@ class Data(DataModel):
                 "weights": fixed_weights,
                 "minimum_type": fixed_minimum_type,
                 "labels": fixed_labels_to,
-                "ecorr": fixed_ecorr,
-                "oc": fixed_oc
             }
         )
 
@@ -60,8 +56,6 @@ class Data(DataModel):
                 weights=[row["weights"]],
                 minimum_type=[row["minimum_type"]],
                 labels=[row["labels"]],
-                ecorr=[row["ecorr"]],
-                oc=[row["oc"]],
             )
         else:
             filtered_table = self.data[item]
@@ -72,8 +66,6 @@ class Data(DataModel):
                 weights=filtered_table["weights"],
                 minimum_type=filtered_table["minimum_type"],
                 labels=filtered_table["labels"],
-                ecorr=filtered_table["ecorr"],
-                oc=filtered_table["oc"]
             )
 
     def __setitem__(self, key, value) -> None:
@@ -94,7 +86,7 @@ class Data(DataModel):
         else:
             raise ValueError("Unsupported file type. Use `csv`, `xls`, or `xlsx` instead")
 
-        expected = ["minimum_time", "minimum_time_error", "weights", "minimum_type", "labels", "ecorr", "oc"]
+        expected = ["minimum_time", "minimum_time_error", "weights", "minimum_type", "labels"]
         if columns:
             if any(k in expected for k in columns.keys()):
                 rename_map = {v: k for k, v in columns.items()}
@@ -153,7 +145,8 @@ class Data(DataModel):
         weights = method(minimum_time_error)
         self._assign_or_fill(new_data.data, "weights", weights, override)
         return new_data
-
+    
+    """
     @staticmethod
     def _equal_bins(data_dataframe: pd.DataFrame, bin_count: int) -> np.ndarray:
         ecorr_vals = data_dataframe["ecorr"].to_numpy(dtype=float)
@@ -294,29 +287,70 @@ class Data(DataModel):
         new_data.data = new_data_df
 
         return new_data
+    """
 
-    def calculate_oc(self, reference_period: float, reference_minimum: float) -> Self:
-        new_data = deepcopy(self)
+    def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit_model") -> OC:
+        df = self.data.copy()
 
-        minimum_time = np.asarray(new_data.data["minimum_time"], dtype=float)
+        if "minimum_time" not in df.columns:
+            raise ValueError("`minimum_time` column is required to compute O–C.")
 
-        if pd.isna(new_data.data["minimum_type"]).any():
-            warnings.warn("minimum_type contains None/NaN values. They will be treated as type 1.")
-        minimum_type = pd.Series(new_data.data["minimum_type"]).replace({None: 0}).fillna(0).astype(int).to_numpy()
+        t = np.asarray(df["minimum_time"].to_numpy(), dtype=float)
 
-        epoch = (minimum_time - float(reference_minimum)) / float(reference_period)
+        phase = (t - reference_minimum) / reference_period
+        cycle = np.rint(phase)
 
-        ecorr = epoch.copy()
-        minimum0 = (minimum_type == 0)
-        minimum1 = (minimum_type == 1)
-        ecorr[minimum0] = np.rint(ecorr[minimum0])
-        ecorr[minimum1] = np.floor(ecorr[minimum1]) + 0.5
+        if "minimum_type" in df.columns:
+            vals = df["minimum_type"].to_numpy()
+            sec = np.zeros_like(t, dtype=bool)
+            for i, v in enumerate(vals):
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    continue
+                s = str(v).strip().lower()
+                if s in {"1", "ii", "sec", "secondary", "s"} or "ii" in s:
+                    sec[i] = True
+                elif s in {"0", "i", "pri", "primary", "p"}:
+                    sec[i] = False
+                else:
+                    try:
+                        n = int(s)
+                        sec[i] = (n == 2)
+                    except Exception:
+                        pass
+            if np.any(sec):
+                cycle_sec = np.rint(phase - 0.5) + 0.5
+                cycle = np.where(sec, cycle_sec, cycle)
 
-        oc = minimum_time - (ecorr * float(reference_period) + float(reference_minimum))
+        calculated = reference_minimum + cycle * reference_period
+        oc = (t - calculated).astype(float).tolist()
 
-        new_data.data.loc[:, "ecorr"] = ecorr
-        new_data.data.loc[:, "oc"] = oc
-        return new_data
+        new_data: Dict[str, Optional[list]] = {
+            "minimum_time": df["minimum_time"].tolist(),
+            "minimum_time_error": df["minimum_time_error"].tolist() if "minimum_time_error" in df else None,
+            "weights": df["weights"].tolist() if "weights" in df else None,
+            "minimum_type": df["minimum_type"].tolist() if "minimum_type" in df else None,
+            "labels": df["labels"].tolist() if "labels" in df else None,
+        }
+
+        cycle = cycle
+
+        common_kwargs = dict(
+            minimum_time=new_data["minimum_time"],
+            minimum_time_error=new_data["minimum_time_error"],
+            weights=new_data["weights"],
+            minimum_type=new_data["minimum_type"],
+            labels=new_data["labels"],
+            cycle=cycle,
+            oc=oc,
+        )
+
+        cls_map = {
+            "lmfit_model": OCLMFit,
+            # "mcmc_model": OC_PyMC,
+        }
+        Target = cls_map.get(model_type, OC)
+
+        return Target(**common_kwargs)
 
     def merge(self, data: Self) -> Self:
         new_data = deepcopy(self)
