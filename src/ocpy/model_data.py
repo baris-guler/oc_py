@@ -53,21 +53,6 @@ class DataModel(ABC):
     ) -> Self:
         """Calculates weights using errors"""
 
-    @staticmethod
-    @abstractmethod
-    def _equal_bins(data_dataframe: pd.DataFrame, bin_count: int) -> np.ndarray:
-        """Produce equal-length bins on ecorr"""
-
-    @abstractmethod
-    def bin(
-        self,
-        bin_count: int = 1,
-        bin_method: Optional[ArrayReducer] = None,
-        bin_error_method: Optional[ArrayReducer] = None,
-        bin_style: Optional[Callable[[pd.DataFrame, int], np.ndarray]] = None
-    ) -> Self:
-        """Bins the data and returns each a new Self"""
-
     @abstractmethod
     def calculate_oc(self, reference_period: float, reference_minimum: float) -> Self:
         """Calculates the O-C for this Data"""

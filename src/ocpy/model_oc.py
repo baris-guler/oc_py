@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from ocpy.custom_types import ArrayReducer
+from ocpy.custom_types import ArrayReducer, BinarySeq
 
 
 class ParameterModel(ABC):
@@ -44,6 +45,17 @@ class OCModel(ABC):
     ) -> Self:
         """Bins the data and returns each a new Self"""
 
+    def __init__(        
+        self,
+        minimum_time: List,
+        minimum_time_error: Optional[List] = None,
+        weights: Optional[List] = None,
+        minimum_type: Optional[BinarySeq] = None,
+        labels: Optional[List] = None,
+        ecorr: Optional[List] = None,
+        oc: Optional[List] = None,):
+        """Constructor method of oc class"""
+
     @abstractmethod
     def merge(self, oc: Self) -> Self:
         """Appends oc to this oc"""
@@ -53,7 +65,7 @@ class OCModel(ABC):
         """Removes the fit from current data"""
 
     @abstractmethod
-    def fit(self, functions: Union[List[ModelComponentModel], ModelComponentModel]) -> ModelResult:
+    def fit(self, model_components: Union[List[ModelComponentModel], ModelComponentModel]) -> ModelResult:
         """Fits the given ModelComponents to the O-C"""
 
     @abstractmethod

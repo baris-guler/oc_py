@@ -15,10 +15,4 @@ BinarySeq = Union[
 
 # A callable that takes a 1D ndarray and returns a numeric value
 ArrayReducer = Callable[[NDArray[np.floating]], Union[int, float, np.number]]
-
-# @dataclass
-# class OC:
-#     time: Optional[NDArray] = None
-#     ecorr: Optional[NDArray] = None
-#     oc: Optional[NDArray] = None
-#     error: Optional[NDArray] = None
+NumberOrParam = Union[float, int, None, "Parameter"]
