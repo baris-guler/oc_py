@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Union, Optional, Dict, List, Tuple, Callable, Literal
 
-from numpy._typing import NDArray
+from numpy.typing import ArrayLike
 from typing_extensions import Self
 
 import pandas as pd
@@ -16,6 +16,7 @@ from .errors import LengthCheckError
 import warnings
 from .oc import OC
 from .oc_lmfit import OCLMFit
+from .oc_pymc import OCPyMC
 
 
 class Data(DataModel):
@@ -289,14 +290,12 @@ class Data(DataModel):
         return new_data
     """
 
-    def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit_model") -> OC:
+    def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit") -> OC:
         df = self.data.copy()
-
         if "minimum_time" not in df.columns:
             raise ValueError("`minimum_time` column is required to compute O–C.")
 
         t = np.asarray(df["minimum_time"].to_numpy(), dtype=float)
-
         phase = (t - reference_minimum) / reference_period
         cycle = np.rint(phase)
 
@@ -332,8 +331,6 @@ class Data(DataModel):
             "labels": df["labels"].tolist() if "labels" in df else None,
         }
 
-        cycle = cycle
-
         common_kwargs = dict(
             minimum_time=new_data["minimum_time"],
             minimum_time_error=new_data["minimum_time_error"],
@@ -344,11 +341,13 @@ class Data(DataModel):
             oc=oc,
         )
 
-        cls_map = {
-            "lmfit_model": OCLMFit,
-            # "mcmc_model": OC_PyMC,
-        }
-        Target = cls_map.get(model_type, OC)
+        key = str(model_type).strip().lower()
+        if key in {"lmfit", "lmfit_model"}:
+            Target = OCLMFit
+        elif key in {"pymc", "pymc_model"}:
+            Target = OCPyMC
+        else:
+            Target = OC
 
         return Target(**common_kwargs)
 
