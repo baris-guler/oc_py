@@ -1,4 +1,5 @@
 from typing import Union, Optional, Dict, Self, Callable, List
+from numpy.typing import ArrayLike
 from lmfit.model import ModelResult
 from pathlib import Path
 import numpy as np
@@ -8,6 +9,8 @@ from ocpy.custom_types import ArrayReducer, BinarySeq, NumberOrParam
 from ocpy.utils import Fixer
 from ocpy.model_oc import OCModel, ModelComponentModel, ParameterModel
 from dataclasses import dataclass
+import pymc as pm
+import pytensor.tensor as pt
 
 @dataclass
 class Parameter(ParameterModel):
@@ -16,10 +19,23 @@ class Parameter(ParameterModel):
     max:   Optional[float] = None
     std:   Optional[float] = None
     fixed: Optional[bool]  = False
+    distribution: str      = "truncatednormal"
 
 
 class ModelComponent(ModelComponentModel):
     params: Dict[str, Parameter]
+
+    math_class = np
+    _atan2 = staticmethod(np.arctan2)
+
+    def set_math(self, mathmod):
+        """Inject backend math (np or pm.math)."""
+        self.math_class = mathmod
+        if pm is not None and mathmod is getattr(pm, "math", None):
+            self._atan2 = getattr(pm.math, "arctan2", getattr(pt, "arctan2", np.arctan2))
+        else:
+            self._atan2 = getattr(mathmod, "arctan2", getattr(mathmod, "atan2", np.arctan2))
+        return self
 
     def model_function(self):
         return self.model_func
@@ -30,23 +46,16 @@ class ModelComponent(ModelComponentModel):
             return v
         return Parameter(value=None if v is None else float(v))
 
-
 class Linear(ModelComponent):
     name = "linear"
 
     def __init__(self, a: NumberOrParam = 1.0, b: NumberOrParam = 0.0, *, name: Optional[str] = None) -> None:
         if name is not None:
             self.name = name
-        self.params = {
-            "a": self._param(a),
-            "b": self._param(b),
-        }
+        self.params = {"a": self._param(a), "b": self._param(b)}
 
-    @staticmethod
-    def model_func(x, a, b):
-        x = np.asarray(x, dtype=float)
+    def model_func(self, x, a, b):
         return a * x + b
-
 
 class Quadratic(ModelComponent):
     name = "quadratic"
@@ -54,17 +63,99 @@ class Quadratic(ModelComponent):
     def __init__(self, q: NumberOrParam = 0.0, *, name: Optional[str] = None) -> None:
         if name is not None:
             self.name = name
+        self.params = {"q": self._param(q)}
+
+    def model_func(self, x, q):
+        return q * (x ** 2)
+
+# Kalmalı mı emin değilim şimdilik test atlanabilir
+class Sinusoidal(ModelComponent):
+    name = "sinusoidal"
+
+    def __init__(
+        self,
+        *,
+        amp:  NumberOrParam = None,
+        P:    NumberOrParam = None,
+        name: Optional[str] = None,
+    ) -> None:
+        if name is not None:
+            self.name = name
+
         self.params = {
-            "q": self._param(q),
+            "amp": self._param(amp),
+            "P":   self._param(P),
         }
 
-    @staticmethod
-    def model_func(x, q):
-        x = np.asarray(x, dtype=float)
-        return q * x**2
-
+    def model_func(self, x, amp, P):
+        m = self.math_class  
+        return amp * m.sin(2.0 * np.pi * x / P)
 
 class Keplerian(ModelComponent):
+    name = "keplerian"
+
+    def __init__(
+        self,
+        *,
+        amp:   NumberOrParam = None,
+        e:     NumberOrParam = 0.0,
+        omega: NumberOrParam = 0.0,
+        P:     NumberOrParam = None,
+        T0:     NumberOrParam = None,
+        name:  Optional[str] = None,
+    ) -> None:
+        if name is not None:
+            self.name = name
+        self.params = {
+            "amp":   self._param(amp),
+            "e":     self._param(e),
+            "omega": self._param(omega),
+            "P":     self._param(P),
+            "T0":     self._param(T0),
+        }
+
+    def _wrap_to_pi(self, M):
+        m = self.math_class
+        return self._atan2(m.sin(M), m.cos(M))
+
+    def _kepler_solve(self, M, e, n_iter: int = 8):
+        m = self.math_class
+        M = self._wrap_to_pi(M)
+        e = m.clip(e, 0.0, 1.0 - 1e-12)
+        E = M + e * m.sin(M)
+        for _ in range(n_iter):
+            f  = E - e * m.sin(E) - M
+            fp = 1.0 - e * m.cos(E)
+            E  = E - f / fp
+        return E
+
+    def model_func(self, x, amp, e, omega, P, T0):
+        m   = self.math_class
+        wr  = omega * (np.pi / 180.0)          
+        M   = 2.0 * np.pi * (x - T0) / P
+        E   = self._kepler_solve(M, e)
+
+        cosE     = m.cos(E)
+        sinE     = m.sin(E)
+        one_me2  = m.maximum(0.0, 1.0 - e*e)
+        sqrt1me2 = m.sqrt(one_me2)
+
+        denom_E  = 1.0 - e * cosE
+        sin_nu   = (sqrt1me2 * sinE) / denom_E
+        cos_nu   = (cosE - e) / denom_E
+
+        sin_nu_plus_w = sin_nu * m.cos(wr) + cos_nu * m.sin(wr)
+        irwin_pref    = (1.0 - e*e) / (1.0 + e * cos_nu)
+        core          = irwin_pref * sin_nu_plus_w + e * m.sin(wr)
+
+        norm = m.sqrt(m.maximum(0.0, 1.0 - (e * m.cos(wr))**2))
+
+        return (amp / norm) * core
+
+
+# Bir şeyler denemek için duruyor teste gerek yok
+# TODO
+class KeplerianOld(ModelComponent):
     name = "keplerian"
 
     def __init__(
@@ -87,114 +178,60 @@ class Keplerian(ModelComponent):
             "T0":    self._param(T0),
         }
 
-    @staticmethod
-    def _kepler_solve(M, e, tol=1e-12, max_iter=50):
-        M = (M + np.pi) % (2*np.pi) - np.pi
-        e = np.clip(e, 0.0, 1.0 - 1e-12)
-        E = M + e*np.sin(M)
-        for _ in range(max_iter):
-            f  = E - e*np.sin(E) - M
-            fp = 1.0 - e*np.cos(E)
-            dE = -f / fp
-            E  = E + dE
-            if np.all(np.abs(dE) < tol):
-                break
+    def _wrap_to_pi(self, M):
+        m = self.math_class
+        return self._atan2(m.sin(M), m.cos(M))
+    
+    def _kepler_solve(self, M, e, n_iter: int = 8):
+        m = self.math_class
+        M = self._wrap_to_pi(M)
+        e = m.clip(e, 0.0, 1.0 - 1e-12)
+        E = M + e * m.sin(M)
+        for _ in range(n_iter):
+            f  = E - e * m.sin(E) - M
+            fp = 1.0 - e * m.cos(E)
+            E  = E - f / fp
         return E
+    
+    def model_func(self, x, amp, e, omega, P, T0):
+        m = self.math_class
+        wr = omega * (np.pi / 180.0)
+        M  = 2.0 * np.pi * (x - T0) / P
+        E  = self._kepler_solve(M, e)
 
-    @staticmethod
-    def model_func(x, amp, e, omega, P, T0):
-        x = np.asarray(x, dtype=float)
-        wr = np.deg2rad(omega)
-        E = Keplerian._kepler_solve(2*np.pi * (x - T0) / P, e)
-        return (amp / np.sqrt(np.maximum(0.0, 1 - (e*np.cos(wr))**2))) * (
-            np.sqrt(np.maximum(0.0, 1 - e*e)) * np.sin(E) * np.cos(wr) + np.cos(E) * np.sin(wr)
+        cosE = m.cos(E)
+        sinE = m.sin(E)
+        sqrt1me2 = m.sqrt(m.maximum(0.0, 1.0 - e * e))
+
+        return amp * (
+            (cosE - e) * m.sin(wr) +
+            sqrt1me2 * sinE * m.cos(wr)
         )
-
-# Bir şeyleri test edeceğim onun için duruyor
-# TODO Silinecek 
-class Keplerian_Old(ModelComponent):
-    name = "keplerian"
-
-    def __init__(self, params: Optional[Dict[str, Parameter]] = None) -> None:
-        super().__init__(params)
-
-    @staticmethod
-    def _kepler_solve(M, e, tol=1e-12, max_iter=50):
-        M = (M + np.pi) % (2.0 * np.pi) - np.pi
-        e = np.clip(e, 0.0, 1.0 - 1e-12)
-
-        if np.ndim(e) == 0:
-            if e < 1e-12:
-                return M
-        else:
-            if np.max(e) < 1e-12:
-                return M
-
-        E = M + e * np.sin(M)
-
-        for _ in range(max_iter):
-            f  = E - e * np.sin(E) - M
-            fp = 1.0 - e * np.cos(E)
-            dE = -f / fp
-            E  = E + dE
-            if np.max(np.abs(dE)) < tol:
-                break
-        return E
-
-    @staticmethod
-    def model_func(x, K, e, omega, P, T0):
-        x = np.asarray(x, dtype=float)
-        omega = np.deg2rad(omega)
-
-        M = 2.0 * np.pi * (x - T0) / P
-        E = Keplerian._kepler_solve(M, e)
-
-        cosE = np.cos(E)
-        sinE = np.sin(E)
-        sqrt1me2 = np.sqrt(np.maximum(0.0, 1.0 - e * e))
-
-        return K * ((cosE - e) * np.sin(omega) + sqrt1me2 * sinE * np.cos(omega))
 
 
 class OC(OCModel):
-    @classmethod
-    def from_file(cls, file: Union[str, Path], columns: Optional[Dict[str, str]] = None) -> Self:
-        file_path = Path(file)
-        if file_path.suffix.lower() == ".csv":
-            df = pd.read_csv(file_path)
-        elif file_path.suffix.lower() in (".xls", ".xlsx"):
-            df = pd.read_excel(file_path)
-        else:
-            raise ValueError("Unsupported file type. Use `csv`, `xls`, or `xlsx` instead")
-        expected = ["minimum_time", "minimum_time_error", "weights", "minimum_type", "labels", "cycle", "oc"]
-        if columns:
-            if any(k in expected for k in columns.keys()):
-                rename_map = {v: k for k, v in columns.items()}
-            else:
-                rename_map = columns
-            df = df.rename(columns=rename_map)
-        kwargs = {c: (df[c] if c in df.columns else None) for c in expected}
-        return cls(**kwargs)
-
     def __init__(
         self,
-        minimum_time: List,
-        minimum_time_error: Optional[List] = None,
-        weights: Optional[List] = None,
-        minimum_type: Optional[BinarySeq] = None,
-        labels: Optional[List] = None,
-        cycle: Optional[List] = None,
-        oc: Optional[List] = None,
+        oc: ArrayLike,
+        minimum_time: Optional[ArrayLike] = None,
+        minimum_time_error: Optional[ArrayLike] = None,
+        weights: Optional[ArrayLike] = None,
+        minimum_type: Optional[ArrayLike] = None,  # 0/1 için de böyle yazabiliriz
+        labels: Optional[ArrayLike] = None,
+        cycle: Optional[ArrayLike] = None,
     ):
-        fixed_minimum_time_error = Fixer.length_fixer(minimum_time_error, minimum_time)
-        fixed_weights = Fixer.length_fixer(weights, minimum_time)
-        fixed_minimum_type = Fixer.length_fixer(minimum_type, minimum_time)
-        fixed_labels_to = Fixer.length_fixer(labels, minimum_time)
-        fixed_cycle = Fixer.length_fixer(cycle, minimum_time)
-        fixed_oc = Fixer.length_fixer(oc, minimum_time)
+        ref = minimum_time
+
+        fixed_minimum_time_error = Fixer.length_fixer(minimum_time_error, ref)
+        fixed_weights           = Fixer.length_fixer(weights, ref)
+        fixed_minimum_type      = Fixer.length_fixer(minimum_type, ref)
+        fixed_labels_to         = Fixer.length_fixer(labels, ref)
+        fixed_cycle             = Fixer.length_fixer(cycle, ref)
+        fixed_oc                = Fixer.length_fixer(oc, ref)
+
         self.data = pd.DataFrame(
             {
-                "minimum_time": minimum_time,
+                "minimum_time": ref,
                 "minimum_time_error": fixed_minimum_time_error,
                 "weights": fixed_weights,
                 "minimum_type": fixed_minimum_type,
@@ -203,6 +240,28 @@ class OC(OCModel):
                 "oc": fixed_oc,
             }
         )
+
+    @classmethod
+    def from_file(cls, file: Union[str, Path], columns: Optional[Dict[str, str]] = None) -> "OC":
+        file_path = Path(file)
+        if file_path.suffix.lower() == ".csv":
+            df = pd.read_csv(file_path)
+        elif file_path.suffix.lower() in (".xls", ".xlsx"):
+            df = pd.read_excel(file_path)
+        else:
+            raise ValueError("Unsupported file type. Use `csv`, `xls`, or `xlsx` instead")
+
+        expected = ["minimum_time", "minimum_time_error", "weights", "minimum_type", "labels", "cycle", "oc"]
+        if columns:
+            if any(k in expected for k in columns.keys()):
+                rename_map = {v: k for k, v in columns.items()}
+            else:
+                rename_map = columns
+            df = df.rename(columns=rename_map)
+
+        # DataFrame kolonları Series, ama init ArrayLike kabul ediyor → direkt geçebiliriz
+        kwargs = {c: (df[c] if c in df.columns else None) for c in expected}
+        return cls(**kwargs)
 
     def __str__(self) -> str:
         return self.data.__str__()
@@ -477,17 +536,57 @@ class OC(OCModel):
     def fit(self, functions: Union[List["ModelComponentModel"], "ModelComponentModel"]) -> "ModelResult":
         pass
 
-    def fit_keplerian(self, parameters: List["ParameterModel"]) -> "ModelComponentModel":
+    def fit_keplerian(
+        self,
+        *,
+        amp: Optional["ParameterModel"] = None,
+        e: Optional["ParameterModel"] = None,
+        omega: Optional["ParameterModel"] = None,
+        P: Optional["ParameterModel"] = None,
+        T: Optional["ParameterModel"] = None,
+    ) -> "ModelComponentModel":
         pass
 
-    def fit_lite(self, parameters: List["ParameterModel"]) -> "ModelComponentModel":
+    def fit_lite(
+        self,
+        *,
+        amp: Optional["ParameterModel"] = None,
+        e: Optional["ParameterModel"] = None,
+        omega: Optional["ParameterModel"] = None,
+        P: Optional["ParameterModel"] = None,
+        T: Optional["ParameterModel"] = None,
+    ) -> "ModelComponentModel":
         pass
 
-    def fit_linear(self, parameters: List["ParameterModel"]) -> "ModelComponentModel":
+    def fit_linear(
+        self,
+        *,
+        a: Optional["ParameterModel"] = None,
+        b: Optional["ParameterModel"] = None,
+    ) -> "ModelComponentModel":
         pass
 
-    def fit_quadratic(self, parameters: List["ParameterModel"]) -> "ModelComponentModel":
+    def fit_quadratic(
+        self,
+        *,
+        q: Optional["ParameterModel"] = None,
+    ) -> "ModelComponentModel":
         pass
 
-    def fit_sinusoidal(self, parameters: List["ParameterModel"]) -> "ModelComponentModel":
+    def fit_sinusoidal(
+        self,
+        *,
+        amp: Optional["ParameterModel"] = None,
+        P: Optional["ParameterModel"] = None,
+    ) -> "ModelComponentModel":
         pass
+
+    def fit_parabola(
+        self,
+        *,
+        q: Optional["ParameterModel"] = None,
+        a: Optional["ParameterModel"] = None,
+        b: Optional["ParameterModel"] = None,
+    ) -> "ModelComponentModel":
+        pass
+    

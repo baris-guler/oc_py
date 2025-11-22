@@ -1,14 +1,24 @@
 import inspect
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 import numpy as np
 import lmfit
 from lmfit.model import ModelResult
 
-from .oc import OC, Parameter, Linear, Quadratic, Keplerian
+from .oc import OC, Parameter, Linear, Quadratic, Keplerian, Sinusoidal
 from ocpy.model_oc import ModelComponentModel
 
 
+def _ensure_param(x, *, default: Parameter) -> Parameter:
+    if isinstance(x, Parameter):
+        return x
+    if x is None:
+        return default
+    return Parameter(value=x)
+
+
 class OCLMFit(OC):
+    math = np
+
     def fit(
         self,
         model_components: list[ModelComponentModel],
@@ -25,6 +35,10 @@ class OCLMFit(OC):
         y = np.asarray(self.data["oc"].to_numpy(), dtype=float)
 
         comps = model_components
+
+        for c in comps:
+            if hasattr(c, "set_math"):
+                c.set_math(self.math)
 
         def base_name(c):
             return getattr(c, "name", c.__class__.__name__.lower())
@@ -52,12 +66,17 @@ class OCLMFit(OC):
                 if full_key not in params:
                     continue
                 p = params[full_key]
-                if cfg.value is not None: p.set(value=cfg.value)
-                if cfg.min   is not None: p.set(min=cfg.min)
-                if cfg.max   is not None: p.set(max=cfg.max)
+                if cfg.value is not None:
+                    p.set(value=cfg.value)
+                if cfg.min is not None:
+                    p.set(min=cfg.min)
+                if cfg.max is not None:
+                    p.set(max=cfg.max)
                 p.set(vary=not bool(cfg.fixed))
 
-        weights = self.data["weights"].to_numpy(dtype=float) if "weights" in self.data.columns else None
+        weights = self.data["weights"].to_numpy(dtype=float)
+        if np.isnan(weights).any():
+            raise ValueError("OCLMFit.fit(...) found NaN values in 'weights'. Please fill or drop them.")
 
         return model.fit(
             y, params, x=x,
@@ -81,51 +100,79 @@ class OCLMFit(OC):
         )
         return new
 
-    def fit_linear(self, *, params: Optional[Dict[str, Parameter]] = None, **kwargs) -> ModelResult:
-        if params is None:
-            params = {
-                "a": Parameter(value=0.0),
-                "b": Parameter(value=0.0),
-            }
-        comp = Linear(params)
+    def fit_linear(self, *, a: Union[Parameter, float, None] = None, b: Union[Parameter, float, None] = None, **kwargs) -> ModelResult:
+        a = _ensure_param(a, default=Parameter(value=0.0))
+        b = _ensure_param(b, default=Parameter(value=0.0))
+        comp = Linear(a=a, b=b)
         return self.fit([comp], **kwargs)
 
-    def fit_quadratic(self, *, params: Optional[Dict[str, Parameter]] = None, **kwargs) -> ModelResult:
-        if params is None:
-            params = {
-                "q": Parameter(value=0.0),
-            }
-        comp = Quadratic(params)
+    def fit_quadratic(self, *, q: Union[Parameter, float, None] = None, **kwargs) -> ModelResult:
+        q = _ensure_param(q, default=Parameter(value=0.0))
+        comp = Quadratic(q=q)
+        return self.fit([comp], **kwargs)
+    
+    def fit_parabola(
+        self,
+        *,
+        q: Union[Parameter, float, None] = None,
+        a: Union[Parameter, float, None] = None,
+        b: Union[Parameter, float, None] = None,
+        **kwargs,
+    ) -> ModelResult:
+        q = _ensure_param(q, default=Parameter(value=0.0))
+        a = _ensure_param(a, default=Parameter(value=0.0))
+        b = _ensure_param(b, default=Parameter(value=0.0))
+        comp_q = Quadratic(q=q)
+        comp_l = Linear(a=a, b=b)
+        return self.fit([comp_q, comp_l], **kwargs)
+
+    def fit_lite(
+        self,
+        *,
+        amp:   Union[Parameter, float, None] = None,
+        e:     Union[Parameter, float, None] = None,
+        omega: Union[Parameter, float, None] = None,
+        P:     Union[Parameter, float, None] = None,
+        T0:    Union[Parameter, float, None] = None,
+        **kwargs,
+    ) -> ModelResult:
+        amp   = _ensure_param(amp,   default=Parameter(value=1e-3, min=0.0))
+        e     = _ensure_param(e,     default=Parameter(value=0.0,   min=0.0, max=0.95))
+        omega = _ensure_param(omega, default=Parameter(value=90.0))
+        P     = _ensure_param(P,     default=Parameter(value=3000.0, min=1.0))
+        T0    = _ensure_param(T0,    default=Parameter(value=0.0))
+
+        comp = Keplerian(amp=amp, e=e, omega=omega, P=P, T0=T0)
         return self.fit([comp], **kwargs)
 
-    def fit_lite(self, *, params: Optional[Dict[str, Parameter]] = None, **kwargs) -> ModelResult:
-        if params is None:
-            params = {
-                "amp":   Parameter(value=1e-3,  min=0.0),
-                "e":     Parameter(value=0.0,   min=0.0, max=0.95),
-                "omega": Parameter(value=90.0),
-                "P":     Parameter(value=3000.0, min=1.0),
-                "T0":    Parameter(value=0.0),
-            }
-        comp = Keplerian(params)
+    def fit_keplerian(
+        self,
+        *,
+        amp:   Union[Parameter, float, None] = None,
+        e:     Union[Parameter, float, None] = None,
+        omega: Union[Parameter, float, None] = None,
+        P:     Union[Parameter, float, None] = None,
+        T0:    Union[Parameter, float, None] = None,
+        **kwargs,
+    ) -> ModelResult:
+        return self.fit_lite(amp=amp, e=e, omega=omega, P=P, T0=T0, **kwargs)
+
+    def fit_sinusoidal(
+        self,
+        *,
+        amp: Union[Parameter, float, None] = None,
+        P:   Union[Parameter, float, None] = None,
+        **kwargs,
+    ) -> ModelResult:
+        amp = _ensure_param(amp, default=Parameter(value=1e-3, min=0))
+        P   = _ensure_param(P,   default=Parameter(value=3000.0, min=0))
+
+        comp = Sinusoidal(
+            amp=amp,
+            P=P,
+        )
         return self.fit([comp], **kwargs)
 
-    def fit_keplerian(self, *, params: Optional[Dict[str, Parameter]] = None, **kwargs) -> ModelResult:
-        return self.fit_lite(params=params, **kwargs)
-
-    def fit_sinusoidal(self, *, params: Optional[Dict[str, Parameter]] = None, **kwargs) -> ModelResult:
-        if params is None:
-            params = {
-                "amp":   Parameter(value=1e-3),
-                "e":     Parameter(value=0.0, min=0.0, max=0.0, fixed=True),
-                "omega": Parameter(value=180.0, min=180.0, max=180.0, fixed=True),
-                "P":     Parameter(value=3000.0, min=1.0),
-                "T0":    Parameter(value=0.0),
-            }
-        comp = Keplerian(params)
-        return self.fit([comp], **kwargs)
-
-    # TODO Testing için Bitene kadar dursun sonra kaldırılacak
     def fit_and_report(
         self,
         result: ModelResult,
@@ -151,7 +198,7 @@ class OCLMFit(OC):
 
         ax = axes[0]
         ax.scatter(x, y, s=20, label="Data")
-        ax.plot(x_dense, y_fit_dense, label="Fit")
+        ax.plot(x_dense, y_fit_dense, "r-", label="Fit")
         ax.set_ylabel(y_col)
         ax.set_title(title or "Fit")
         ax.legend()
@@ -183,7 +230,6 @@ class OCLMFit(OC):
 
         plt.show()
 
-    # TODO Testing için Bitene kadar dursun sonra kaldırılacak
     def plot_components_on_data(
         self,
         model_components: list,
@@ -214,9 +260,7 @@ class OCLMFit(OC):
             kwargs = {}
             for pname in pnames:
                 if pname not in params_dict:
-                    raise KeyError(
-                        f"Component '{_comp_name(comp)}' missing parameter '{pname}' in comp.params"
-                    )
+                    raise KeyError(f"Component '{_comp_name(comp)}' missing parameter '{pname}' in comp.params")
                 kwargs[pname] = float(_param_value(params_dict[pname]))
             return comp.model_func(xvals, **kwargs)
 

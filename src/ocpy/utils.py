@@ -13,14 +13,19 @@ class Checker:
 class Fixer:
     @staticmethod
     def length_fixer(data, reference):
+        if reference is None:
+            return data
+
         if isinstance(data, str):
-            return [data] * len(reference)
+            return np.array([data] * len(reference), dtype=object)
 
         if hasattr(data, "__len__"):
             Checker.length_checker(data, reference)
+            if isinstance(data, list):
+                return np.array(data)
             return data
         else:
-            return [data] * len(reference)
+            return np.array([data] * len(reference))
 
     @staticmethod
     def none_to_nan(data_frame):
