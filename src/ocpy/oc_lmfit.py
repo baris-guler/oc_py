@@ -1,7 +1,5 @@
-import inspect
-from typing import List, Optional, Dict, Union
+from typing import Optional, Union
 import numpy as np
-import lmfit
 from lmfit.model import ModelResult
 
 from .oc import OC, Parameter, Linear, Quadratic, Keplerian, Sinusoidal
