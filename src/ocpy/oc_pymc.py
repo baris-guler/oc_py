@@ -301,10 +301,15 @@ class OCPyMC(OC):
             fig.tight_layout()
 
     # Teste gerek yok çıkarılacak
-    def create_corner_plot(self, idata, var_names=None, textsize=10, kind="kde", **kwargs):
+    # Teste gerek yok çıkarılacak
+    def create_corner_plot(self, idata, var_names=None, **kwargs):
         import numpy as np
         import arviz as az
         import matplotlib.pyplot as plt
+        try:
+            import corner
+        except ImportError:
+            raise ImportError("Corner plot requires 'corner' library. Please install it with `pip install corner`.")
 
         # 1) Otomatik Değişken Seçimi
         if var_names is None:
@@ -315,62 +320,34 @@ class OCPyMC(OC):
             candidates = var_names
 
         final_vars = []
-        for v in candidates:
-            final_vars.append(v)
-
         # 2) Sabit değişken kontrolü
-        # Kullanıcı "fixed parametreleri çizdirmesin" dediği için
-        # varyansı 0 (veya çok çok düşük) olanları listeden çıkarıyoruz.
-        
-        filtered_vars = []
-        for v in final_vars:
+        for v in candidates:
             # Orijinal veriden kontrol edelim
             vals = idata.posterior[v].values
-            # Gerçekten sabit (varyansı 0) olanları eleyelim. 
-            # PyMC fixed parametreleri deterministic olarak kaydederse dümdüz sabit olur.
-            # Yine de minik float hataları için çok küçük bir epsilon koyalım.
             if vals.std() > 1e-25:
-                filtered_vars.append(v)
-        
-        final_vars = filtered_vars
+                final_vars.append(v)
         
         if not final_vars:
              raise ValueError("Corner plot için uygun (sabit olmayan) parametre bulunamadı.")
 
-        # Orijinal veriyi bozmamak için kopya üzerinde çalışıyoruz.
-        plot_data = idata.posterior.copy(deep=True)
-
-        # 3) Çizim
-        kde_kwargs = kwargs.pop("kde_kwargs", {"contour": True})
+        # 3) Veriyi hazırla (samples -> (N, D))
+        # az.extract chain ve draw boyutlarını 'sample' olarak düzleştirir
+        subset = az.extract(idata, var_names=final_vars)
         
-        # Divergences verisi yoksa veya varsayılan olarak False yapalım uyarılardan kaçınmak için
-        # Eğer kullanıcı özel olarak istemediyse False yapıyoruz.
-        divergences = kwargs.pop("divergences", False)
+        # xarray dataset'ten numpy array'e çevirirken sırayı koruyalım
+        samples = np.vstack([subset[v].values for v in final_vars]).T
         
-        # Çok fazla değişken varsa plot limiti uyarısı gelir, bunu arttıralım
-        if "plot.max_subplots" in az.rcParams:
-            az.rcParams['plot.max_subplots'] = max(az.rcParams['plot.max_subplots'], (len(final_vars)**2) + 10)
+        # 4) Çizim (corner.corner)
+        # Varsayılan ayarlar
+        if "quantiles" not in kwargs:
+            kwargs["quantiles"] = [0.16, 0.5, 0.84]
+        if "show_titles" not in kwargs:
+            kwargs["show_titles"] = True
+        if "title_fmt" not in kwargs:
+            kwargs["title_fmt"] = ".4f"
         
-        ax = az.plot_pair(
-            plot_data, # Kopya veriyi kullanıyoruz
-            var_names=final_vars,
-            kind=kind,
-            marginals=True,
-            textsize=textsize,
-            point_estimate="median",
-            divergences=divergences,
-            show=False,
-            kde_kwargs=kde_kwargs if kind == "kde" else None,
-            **kwargs
-        )
-
-        # 4) Figür referansı döndür
-        if isinstance(ax, np.ndarray):
-            fig = ax.ravel()[0].figure
-        else:
-            fig = ax.figure
-
-        fig.tight_layout()
+        fig = corner.corner(samples, labels=final_vars, **kwargs)
+        
         return fig
 
     # Teste gerek yok çıkarılacak
@@ -412,8 +389,8 @@ class OCPyMC(OC):
         x = np.asarray(self.data["cycle"].to_numpy(), dtype=float)
         y = np.asarray(self.data["oc"].to_numpy(), dtype=float)
 
-        scatter_kwargs = dict(s=16, alpha=0.75) | (scatter_kwargs or {})
-        sum_kwargs = dict(lw=2.6, alpha=0.95, label="Sum of selected components") | (sum_kwargs or {})
+        scatter_kwargs = dict(s=16, alpha=0.75, color="tab:blue", zorder=1) | (scatter_kwargs or {})
+        sum_kwargs = dict(lw=2.6, alpha=0.95, label="Sum of selected components", color="tab:red", zorder=2) | (sum_kwargs or {})
         comp_kwargs = dict(lw=1.5, alpha=0.9, linestyle="--") | (comp_kwargs or {})
 
         xmin, xmax = (float(np.min(x)), float(np.max(x))) if x.size else (0.0, 1.0)
@@ -461,7 +438,7 @@ class OCPyMC(OC):
         
         # Residuals çizimi
         if ax_res is not None:
-            ax_res.scatter(x, res_data, s=16, alpha=0.75, color="k")
+            ax_res.scatter(x, res_data, s=16, alpha=0.75, color="tab:blue")
             ax_res.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
             ax_res.set_ylabel("Resid")
             ax_res.set_xlabel("Cycle")
