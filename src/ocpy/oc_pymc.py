@@ -65,7 +65,18 @@ class OCPyMC(OC):
             return pm.Normal(name, mu=val, sigma=float(sd), initval=val)
 
         with pm.Model() as model:
-            prefixes = [f"{getattr(c,'name', c.__class__.__name__.lower())}{i+1}_" for i, c in enumerate(model_components)]
+            # Generate prefixes: append index only if names collide
+            base_names = [getattr(c, 'name', c.__class__.__name__.lower()) for c in model_components]
+            counts = {name: base_names.count(name) for name in base_names}
+            seen = {name: 0 for name in base_names}
+            
+            prefixes = []
+            for name in base_names:
+                seen[name] += 1
+                if counts[name] > 1:
+                    prefixes.append(f"{name}{seen[name]}_")
+                else:
+                    prefixes.append(f"{name}_")
             comp_rvs = {}
 
             for comp, pref in zip(model_components, prefixes):
@@ -150,7 +161,7 @@ class OCPyMC(OC):
         lin  = Linear(a=self._to_param(a, default=0.0), b=self._to_param(b, default=0.0))
         return self.fit([quad, lin], **kwargs)
 
-    def fit_and_report(self, idata: az.InferenceData, *, title: str | None = "Components (posterior median)") -> None:
+    def fit_and_report(self, idata: az.InferenceData, *, title: str | None = "Components (posterior median)", residuals: bool = True) -> None:
         def split_name(vn: str):
             i = vn.rfind("_")
             return (vn[:i], vn[i + 1 :]) if i != -1 else (None, None)
@@ -214,16 +225,83 @@ class OCPyMC(OC):
                 ))
 
         if hasattr(self, "plot_components_on_data"):
+            # --- Uncertainty Band Calculation ---
+            # 1. Generate x-values for plotting (consistent with plot_components_on_data default)
+            x = np.asarray(self.data["cycle"].to_numpy(), dtype=float)
+            xmin, xmax = (float(np.min(x)), float(np.max(x))) if x.size else (0.0, 1.0)
+            xline = np.linspace(xmin, xmax, 800)
+
+            # 2. Sample from posterior
+            # Using arviz extract to get a flat chain of samples
+            subset = az.extract(idata, num_samples=200)
+            
+            # 3. Evaluate models
+            # We need to reconstruct the total model for each sample.
+            # We iterate over the `comps` we just built (which correspond to `order` in prefixes)
+            # and evaluate them with the parameters from the sample.
+            
+            y_samples = []
+            n_draws = subset.sample.size
+            
+            # Pre-fetch variable data to avoid repeated lookups
+            # groups structure: groups[prefix][pname] -> median
+            # we need: subset[f"{prefix}_{pname}"]
+            
+            for s in range(n_draws):
+                y_total = np.zeros_like(xline)
+                
+                for i, pref in enumerate(order):
+                    comp = comps[i]
+                    # Get parameters for this component
+                    # Note: We can't use comp.params directly because those are fixed to median from the factory above.
+                    # We use the 'groups' keys to know which params to fetch.
+                    
+                    kwargs = {}
+                    for pname in groups[pref].keys():
+                        vn = f"{pref}_{pname}"
+                        # split_name logic used rfind('_'), so we reconstruct it exactly.
+                        # Wait, groups keys came from split_name.
+                        # If prefix is "linear" and pname is "a", var is "linear_a".
+                        
+                        if vn in subset:
+                            val = subset[vn].values[s]
+                            kwargs[pname] = float(val)
+                        else:
+                            # Fallback for fixed parameters not in posterior (unlikely if they are in groups)
+                            pass
+
+                    # comp is an object, we can call model_func
+                    y_total += comp.model_func(xline, **kwargs)
+                
+                y_samples.append(y_total)
+            
+            y_samples = np.array(y_samples)
+            # Calculate 1-sigma interval (16% - 84%) or 95%
+            # Let's use 1-sigma for "uncertainty bar" typically or 2-sigma. 
+            # PyMC default is usually HDI, let's use percentiles for simplicity and speed.
+            low = np.percentile(y_samples, 16, axis=0)
+            high = np.percentile(y_samples, 84, axis=0)
+            
+            band = (xline, low, high)
+
             fig, ax = self.plot_components_on_data(
                 comps,
                 sum_kwargs=dict(lw=2.6, alpha=0.95, label="Median Model"),
                 comp_kwargs=dict(lw=1.5, alpha=0.85, linestyle="--"),
+                uncertainty_band=band,
+                residuals=residuals
             )
-            ax.set_title(title)
+            
+            # If subplots were created (2 axes), set title on the main one
+            if isinstance(ax, (tuple, list, np.ndarray)):
+                 ax[0].set_title(title)
+            else:
+                 ax.set_title(title)
+                 
             fig.tight_layout()
 
     # Teste gerek yok çıkarılacak
-    def create_corner_plot(self, idata, var_names=None, textsize=10):
+    def create_corner_plot(self, idata, var_names=None, textsize=10, kind="kde", **kwargs):
         import numpy as np
         import arviz as az
         import matplotlib.pyplot as plt
@@ -240,33 +318,50 @@ class OCPyMC(OC):
         for v in candidates:
             final_vars.append(v)
 
+        # 2) Sabit değişken kontrolü
+        # Kullanıcı "fixed parametreleri çizdirmesin" dediği için
+        # varyansı 0 (veya çok çok düşük) olanları listeden çıkarıyoruz.
+        
+        filtered_vars = []
+        for v in final_vars:
+            # Orijinal veriden kontrol edelim
+            vals = idata.posterior[v].values
+            # Gerçekten sabit (varyansı 0) olanları eleyelim. 
+            # PyMC fixed parametreleri deterministic olarak kaydederse dümdüz sabit olur.
+            # Yine de minik float hataları için çok küçük bir epsilon koyalım.
+            if vals.std() > 1e-25:
+                filtered_vars.append(v)
+        
+        final_vars = filtered_vars
+        
         if not final_vars:
-            raise ValueError("Corner plot çizecek uygun (değişken) parametre bulunamadı.")
+             raise ValueError("Corner plot için uygun (sabit olmayan) parametre bulunamadı.")
 
-        # 2) Sabit değişken kontrolü ve Jitter ekleme (KDE hatasını önlemek için)
         # Orijinal veriyi bozmamak için kopya üzerinde çalışıyoruz.
         plot_data = idata.posterior.copy(deep=True)
-        
-        for v in final_vars:
-            vals = plot_data[v].values
-            # Eğer varyans çok düşükse (pratik olarak sabitse), minik bir gürültü ekle
-            if vals.std() < 1e-9: 
-                # Değerin büyüklüğüne göre ölçeklenmiş çok küçük bir epsilon
-                scale = 1e-6 * (np.abs(vals.mean()) + 1e-6) 
-                jitter = np.random.normal(0, scale, size=vals.shape)
-                plot_data[v].values += jitter
 
         # 3) Çizim
+        kde_kwargs = kwargs.pop("kde_kwargs", {"contour": True})
+        
+        # Divergences verisi yoksa veya varsayılan olarak False yapalım uyarılardan kaçınmak için
+        # Eğer kullanıcı özel olarak istemediyse False yapıyoruz.
+        divergences = kwargs.pop("divergences", False)
+        
+        # Çok fazla değişken varsa plot limiti uyarısı gelir, bunu arttıralım
+        if "plot.max_subplots" in az.rcParams:
+            az.rcParams['plot.max_subplots'] = max(az.rcParams['plot.max_subplots'], (len(final_vars)**2) + 10)
+        
         ax = az.plot_pair(
             plot_data, # Kopya veriyi kullanıyoruz
             var_names=final_vars,
-            kind="kde",
+            kind=kind,
             marginals=True,
             textsize=textsize,
             point_estimate="median",
-            divergences=True,
+            divergences=divergences,
             show=False,
-            kde_kwargs={"contour": True}
+            kde_kwargs=kde_kwargs if kind == "kde" else None,
+            **kwargs
         )
 
         # 4) Figür referansı döndür
@@ -288,6 +383,8 @@ class OCPyMC(OC):
         scatter_kwargs: dict | None = None,
         sum_kwargs: dict | None = None,
         comp_kwargs: dict | None = None,
+        uncertainty_band: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+        residuals: bool = True,
     ):
         import matplotlib.pyplot as plt
         import inspect
@@ -330,19 +427,50 @@ class OCPyMC(OC):
             comp_curves.append((comp, y_comp))
         y_sum = np.sum([yc for _, yc in comp_curves], axis=0) if comp_curves else np.zeros_like(xline)
 
+        # Residualler için modelin gözlem noktalarındaki değerini hesaplayalım
+        y_model_at_obs = np.zeros_like(x)
+        for comp in model_components:
+            y_model_at_obs += _eval_component(comp, x)
+        res_data = y - y_model_at_obs
+
+        ax_res = None
         if ax is None:
-            fig, ax = plt.subplots(figsize=(10.0, 5.4))
+            if residuals:
+                fig, (ax, ax_res) = plt.subplots(2, 1, figsize=(10.0, 7.0), sharex=True, 
+                                                 gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.04})
+            else:
+                fig, ax = plt.subplots(figsize=(10.0, 5.4))
         else:
             fig = ax.figure
+            # Dışarıdan ax verildiyse residuals çizmek zor, şimdilik atlıyoruz veya
+            # kullanıcı residuals=True dediyse bile tek ax'e çizemeyiz.
+            pass
+
+        if uncertainty_band is not None:
+            bx, blow, bhigh = uncertainty_band
+            ax.fill_between(bx, blow, bhigh, color="k", alpha=0.2, label="Uncertainty (1σ)")
 
         ax.scatter(x, y, **scatter_kwargs)
         ax.plot(xline, y_sum, **sum_kwargs)
         for comp, y_comp in comp_curves:
             ax.plot(xline, y_comp, label=_comp_name(comp), **comp_kwargs)
 
-        ax.set_xlabel("Cycle")
         ax.set_ylabel("O−C")
         ax.grid(True, alpha=0.25)
         ax.legend(loc="best")
-        fig.tight_layout()
-        return fig, ax
+        
+        # Residuals çizimi
+        if ax_res is not None:
+            ax_res.scatter(x, res_data, s=16, alpha=0.75, color="k")
+            ax_res.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
+            ax_res.set_ylabel("Resid")
+            ax_res.set_xlabel("Cycle")
+            ax_res.grid(True, alpha=0.25)
+            # Üst eksendeki x label'ı kaldıralım ki çakışmasın
+            ax.set_xlabel("")
+        else:
+            ax.set_xlabel("Cycle")
+
+        # tight_layout çağrısını dışarı bıraktık (dönen fig üzerinden yapılabilir) veya burada yapabiliriz.
+        # fit_and_report çağırıyor zaten.
+        return fig, ax if ax_res is None else (ax, ax_res)
