@@ -1,7 +1,6 @@
 from pathlib import Path
-from typing import Union, Optional, Dict, List, Tuple, Callable, Literal
+from typing import Union, Optional, Dict, List, Tuple, Callable
 
-from numpy.typing import ArrayLike
 from typing_extensions import Self
 
 import pandas as pd
@@ -9,11 +8,10 @@ import numpy as np
 from copy import deepcopy
 
 from ocpy.model_data import DataModel
-from ocpy.custom_types import ArrayReducer, BinarySeq
+from ocpy.custom_types import BinarySeq
 from ocpy.utils import Fixer
 
 from .errors import LengthCheckError
-import warnings
 from .oc import OC
 from .oc_lmfit import OCLMFit
 from .oc_pymc import OCPyMC
@@ -47,7 +45,7 @@ class Data(DataModel):
 
     def __getitem__(self, item) -> Union[Self, pd.Series]:
         if isinstance(item, str):
-            # str ise pd.series döndürüyor ne yapsam bilemedim. Bunu konuşalım...
+
             return self.data[item]
         elif isinstance(item, int):
             row = self.data.iloc[item]
@@ -79,7 +77,7 @@ class Data(DataModel):
     def from_file(cls, file: Union[str, Path], columns: Optional[Dict[str, str]] = None) -> Self:
         file_path = Path(file)
 
-        # TODO change file reading (do without extension) 
+ 
         if file_path.suffix.lower() == ".csv":
             df = pd.read_csv(file_path)
         elif file_path.suffix.lower() in (".xls", ".xlsx"):
@@ -373,3 +371,4 @@ class Data(DataModel):
             groups.append(new_obj)
 
         return groups
+    

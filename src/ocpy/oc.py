@@ -1,11 +1,11 @@
-from typing import Union, Optional, Dict, Self, Callable, List
+from typing import Union, Optional, Dict, Self, Callable, List, Literal
 from numpy.typing import ArrayLike
 from lmfit.model import ModelResult
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ocpy.custom_types import ArrayReducer, BinarySeq, NumberOrParam
+from ocpy.custom_types import ArrayReducer, NumberOrParam
 from ocpy.utils import Fixer
 from ocpy.model_oc import OCModel, ModelComponentModel, ParameterModel
 from dataclasses import dataclass
@@ -28,7 +28,6 @@ class ModelComponent(ModelComponentModel):
     _atan2 = staticmethod(np.arctan2)
 
     def set_math(self, mathmod):
-        """Inject backend math (np or pm.math)."""
         self.math_class = mathmod
         if pm is not None and mathmod is getattr(pm, "math", None):
             self._atan2 = getattr(pm.math, "arctan2", getattr(pt, "arctan2", np.arctan2))
@@ -67,7 +66,7 @@ class Quadratic(ModelComponent):
     def model_func(self, x, q):
         return q * (x ** 2)
 
-# Kalmalı mı emin değilim şimdilik test atlanabilir
+
 class Sinusoidal(ModelComponent):
     name = "sinusoidal"
 
@@ -129,12 +128,12 @@ class Keplerian(ModelComponent):
         M = 2.0 * np.pi * (x - T0) / P
         E = self._kepler_solve(M, e)
         
-        # True Anomaly
+
         sqrt_term = m.sqrt((1.0 + e) / (1.0 - e))
         tan_half_E = m.tan(E / 2.0)
         true_anom = 2.0 * m.arctan(sqrt_term * tan_half_E)
         
-        # LiTE Formülü (Sizin sağladığınız özel formül)
+
         denom_factor = m.sqrt(1.0 - (e**2) * (m.cos(w_rad))**2)
         amp_term = amp / denom_factor
         
@@ -143,9 +142,6 @@ class Keplerian(ModelComponent):
         
         return amp_term * (term1 + term2)
 
-
-# Bir şeyler denemek için duruyor teste gerek yok
-# TODO
 class KeplerianOld(ModelComponent):
     name = "keplerian"
 
@@ -207,7 +203,7 @@ class OC(OCModel):
         minimum_time: Optional[ArrayLike] = None,
         minimum_time_error: Optional[ArrayLike] = None,
         weights: Optional[ArrayLike] = None,
-        minimum_type: Optional[ArrayLike] = None,  # 0/1 için de böyle yazabiliriz
+        minimum_type: Optional[ArrayLike] = None,
         labels: Optional[ArrayLike] = None,
         cycle: Optional[ArrayLike] = None,
     ):
@@ -250,7 +246,7 @@ class OC(OCModel):
                 rename_map = columns
             df = df.rename(columns=rename_map)
 
-        # DataFrame kolonları Series, ama init ArrayLike kabul ediyor → direkt geçebiliriz
+
         kwargs = {c: (df[c] if c in df.columns else None) for c in expected}
         return cls(**kwargs)
 
@@ -580,4 +576,41 @@ class OC(OCModel):
         b: Optional["ParameterModel"] = None,
     ) -> "ModelComponentModel":
         pass
+
+    def plot(
+        self,
+        model: Union["InferenceData", "ModelResult", List["ModelComponent"]] = None,
+        *,
+        ax=None,
+        ax_res=None,
+        residuals: bool = True,
+        title: Optional[str] = None,
+        x_col: str = "cycle",
+        y_col: str = "oc",
+        fig_size: tuple = (10, 7),
+        plot_kwargs: Optional[dict] = None,
+        extension_factor: float = 0.05
+    ):
+        from .visualization import Plot
+        return Plot.plot(
+            self,
+            model=model,
+            ax=ax,
+            ax_res=ax_res,
+            residuals=residuals,
+            title=title,
+            x_col=x_col,
+            y_col=y_col,
+            fig_size=fig_size,
+            plot_kwargs=plot_kwargs,
+            extension_factor=extension_factor
+        )
+
+    def corner(self, model: "InferenceData", cornerstyle: Literal["corner", "arviz"] = "corner", units: Optional[Dict[str, str]] = None, **kwargs):
+        from .visualization import Plot
+        return Plot.plot_corner(model, cornerstyle=cornerstyle, units=units, **kwargs)
+
+    def trace(self, model: "InferenceData", **kwargs):
+        from .visualization import Plot
+        return Plot.plot_trace(model, **kwargs)
     

@@ -3,11 +3,10 @@ from pathlib import Path
 from typing import Optional, Union, List, Dict, Tuple, Callable
 from typing_extensions import Self
 
-import numpy as np
 import pandas as pd
 from numpy._typing import NDArray
 
-from ocpy.custom_types import BinarySeq, ArrayReducer
+from ocpy.custom_types import BinarySeq
 
 
 class DataModel(ABC):

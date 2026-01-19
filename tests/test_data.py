@@ -22,10 +22,14 @@ class TestData(TestCase):
                 "label": np.random.choice(["CCD", "Phot"], size=200),
             }
         )
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=True, mode="w", newline="", encoding="utf-8") as tmp:
-            df.to_csv(tmp.name, index=False)
+        import os
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8") as tmp:
+                tmp_name = tmp.name
+                df.to_csv(tmp.name, index=False)
+            
             data = Data.from_file(
-                tmp.name,
+                tmp_name,
                 {
                     "minimum_time": "time",
                     "minimum_time_error": "error",
@@ -34,6 +38,9 @@ class TestData(TestCase):
                     "labels": "label",
                 }
             )
+        finally:
+            if 'tmp_name' in locals() and os.path.exists(tmp_name):
+                os.unlink(tmp_name)
 
             self.assertEqual(len(data), len(df))
 
@@ -198,8 +205,8 @@ class TestData(TestCase):
 
     def test_calculate_oc(self):
         oc = self.DATA.calculate_oc(
-            float(np.mean(np.diff(self.DATA["minimum_time"]))),
-            float(self.DATA[0]["minimum_time"])
+            float(self.DATA["minimum_time"].iloc[0]),
+            float(np.mean(np.diff(self.DATA["minimum_time"])))
         )
         self.assertEqual(oc["oc"].sum(), 0)
 
@@ -230,7 +237,6 @@ class TestData(TestCase):
             weights=np.random.random(200).tolist(),
             minimum_type=np.random.choice([True, False], size=200),
             labels=np.random.choice(["CCD", "Phot"], size=200),
-            ecorr=np.random.random(200).tolist(),
         )
         grouped_data = data.group_by("labels")
         self.assertEqual(len(grouped_data), len(data["labels"].unique()))
