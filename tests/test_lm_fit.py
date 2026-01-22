@@ -48,8 +48,8 @@ class TestOCLMFit(TestCase):
 
     def test_fit_sinusoidal(self):
         for _ in range(100):
-            start = randint(-1000, -50)
-            end = randint(50, 1000)
+            start = randint(-1000, -1)
+            end = randint(1, 1000)
 
             cycle = np.linspace(start, end, 100)
             oc = np.sin(np.deg2rad(cycle))
