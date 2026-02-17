@@ -1,4 +1,5 @@
-astropy
-numpy
-pandas
-lmfit
+astropy==7.1.1
+numpy==2.3.4
+pandas==2.3.3
+lmfit==1.3.4
+pymc==5.26.1

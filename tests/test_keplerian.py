@@ -63,6 +63,14 @@ class TestKeplerian(TestCase):
         k = Keplerian(name="my_kepler")
         self.assertEqual(k.name, "my_kepler")
 
+    def test_wrap_to_pi_range(self):
+        k = Keplerian()
+
+        for _ in range(50):
+            M = random() * 20 - 10
+            wrapped = k._wrap_to_pi(M)
+            self.assertTrue(-np.pi <= wrapped <= np.pi)
+
     def test_kepler_solve_basic(self):
         k = Keplerian()
         e = 0.1
@@ -71,7 +79,7 @@ class TestKeplerian(TestCase):
             M = random() * 2 * np.pi - np.pi
             E = k._kepler_solve(M, e)
             lhs = E - e * np.sin(E)
-            self.assertAlmostEqual(lhs, M, places=6)
+            self.assertAlmostEqual(lhs, k._wrap_to_pi(M), places=6)
 
     def test_model_function_simple(self):
         amp = 10.0
