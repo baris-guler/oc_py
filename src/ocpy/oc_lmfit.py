@@ -1,5 +1,7 @@
 from typing import Optional, Union
 import numpy as np
+import lmfit
+from collections import Counter, defaultdict
 from lmfit.model import ModelResult
 
 from .oc import OC, Parameter, Linear, Quadratic, Keplerian, Sinusoidal
@@ -25,10 +27,7 @@ class OCLMFit(OC):
         method: str = "leastsq",
         **kwargs,
     ) -> ModelResult:
-        import lmfit
-        import numpy as np
-        from collections import Counter, defaultdict
-
+        
         x = np.asarray(self.data["cycle"].to_numpy(), dtype=float)
         y = np.asarray(self.data["oc"].to_numpy(), dtype=float)
 
@@ -43,6 +42,8 @@ class OCLMFit(OC):
 
         totals = Counter(base_name(c) for c in comps)
         seen = defaultdict(int)
+
+
         prefixes = []
         for c in comps:
             b = base_name(c)
@@ -50,7 +51,11 @@ class OCLMFit(OC):
             prefixes.append(f"{b}_" if totals[b] == 1 else f"{b}{seen[b]}_")
 
         def make_model(comp, prefix) -> lmfit.Model:
-            return lmfit.Model(comp.model_func, independent_vars=["x"], prefix=prefix)
+            model = lmfit.Model(comp.model_func, independent_vars=["x"], prefix=prefix)
+            for p in getattr(comp, "params", {}).keys():
+                if p not in model.param_names:
+                    model.set_param_hint(p)
+            return model
 
         model = make_model(comps[0], prefixes[0])
         for c, pref in zip(comps[1:], prefixes[1:]):
@@ -170,5 +175,7 @@ class OCLMFit(OC):
             P=P,
         )
         return self.fit([comp], **kwargs)
+
+
 
 

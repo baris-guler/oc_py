@@ -141,6 +141,8 @@ class OCPyMC(OC):
         comp = Sinusoidal(amp=self._to_param(amp, default=1e-3), P=self._to_param(P, default=1000.0))
         return self.fit([comp], **kwargs)
 
+
+
     def fit_keplerian(self, *, amp: float | Parameter | None = None, e: float | Parameter | None = None, omega: float | Parameter | None = None, P: float | Parameter | None = None, T0: float | Parameter | None = None, name: Optional[str] = None, **kwargs) -> az.InferenceData:
         comp = Keplerian(
             amp=self._to_param(amp, default=0.001),

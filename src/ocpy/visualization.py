@@ -251,7 +251,12 @@ class Plot:
 
         def _sig_param_names(comp):
             sig = inspect.signature(comp.model_func)
-            return [p.name for p in list(sig.parameters.values())[1:]]
+            params = list(sig.parameters.values())[1:] # skip 'x'
+            names = [p.name for p in params if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)]
+            # If the function uses **kwargs, we assume it takes everything in comp.params
+            if any(p.kind == p.VAR_KEYWORD for p in params):
+                names = list(getattr(comp, "params", {}).keys())
+            return names
 
         def _param_value(v):
             return getattr(v, "value", v)
@@ -361,6 +366,11 @@ class Plot:
              is_pymc = hasattr(model, "posterior")
              is_lmfit = hasattr(model, "eval")
              is_list = isinstance(model, (list, tuple))
+             is_component = hasattr(model, "model_func") and hasattr(model, "params")
+
+             if is_component:
+                 model = [model]
+                 is_list = True
              
              if is_pymc:
                  cls.plot_model_pymc(model, data, ax=main_ax, x_col=x_col, extension_factor=extension_factor)
@@ -388,7 +398,11 @@ class Plot:
                      y_model_at_obs = np.zeros_like(x)
                      def _sig_param_names(comp):
                         sig = inspect.signature(comp.model_func)
-                        return [p.name for p in list(sig.parameters.values())[1:]]
+                        params = list(sig.parameters.values())[1:]
+                        names = [p.name for p in params if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)]
+                        if any(p.kind == p.VAR_KEYWORD for p in params):
+                            names = list(getattr(comp, "params", {}).keys())
+                        return names
                      def _param_value(v):
                         return getattr(v, "value", v)
                         

@@ -87,3 +87,5 @@ class OCModel(ABC):
     @abstractmethod
     def fit_sinusoidal(self, parameters: List[ParameterModel]) -> ModelComponentModel:
         """Makes a sinusoidal fit"""
+
+

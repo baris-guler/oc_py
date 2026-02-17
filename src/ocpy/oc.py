@@ -1,9 +1,12 @@
 from typing import Union, Optional, Dict, Self, Callable, List, Literal
+from abc import ABC, abstractmethod
 from numpy.typing import ArrayLike
 from lmfit.model import ModelResult
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from astropy import constants as const
+import math
 
 from ocpy.custom_types import ArrayReducer, NumberOrParam
 from ocpy.utils import Fixer
@@ -43,6 +46,7 @@ class ModelComponent(ModelComponentModel):
         if isinstance(v, Parameter):
             return v
         return Parameter(value=None if v is None else float(v))
+
 
 class Linear(ModelComponent):
     name = "linear"
@@ -128,12 +132,10 @@ class Keplerian(ModelComponent):
         M = 2.0 * np.pi * (x - T0) / P
         E = self._kepler_solve(M, e)
         
-
         sqrt_term = m.sqrt((1.0 + e) / (1.0 - e))
         tan_half_E = m.tan(E / 2.0)
         true_anom = 2.0 * m.arctan(sqrt_term * tan_half_E)
         
-
         denom_factor = m.sqrt(1.0 - (e**2) * (m.cos(w_rad))**2)
         amp_term = amp / denom_factor
         
@@ -194,6 +196,8 @@ class KeplerianOld(ModelComponent):
             (cosE - e) * m.sin(wr) +
             sqrt1me2 * sinE * m.cos(wr)
         )
+
+
 
 
 class OC(OCModel):
@@ -576,6 +580,8 @@ class OC(OCModel):
         b: Optional["ParameterModel"] = None,
     ) -> "ModelComponentModel":
         pass
+
+
 
     def plot(
         self,
