@@ -133,35 +133,43 @@ class Plot:
 
         order = sorted(groups.keys(), key=lambda p: parse_prefix(p))
         comps = []
+        valid_order = []
         
         for pref in order:
             base, _ = parse_prefix(pref)
             fields = groups[pref]
+            comp = None
 
-            if base == "linear":
-                comps.append(Linear(
+            if base in ("linear", "lin"):
+                comp = Linear(
                     a=Parameter(value=fields.get("a", 0.0), fixed=True),
                     b=Parameter(value=fields.get("b", 0.0), fixed=True)
-                ))
-            elif base == "quadratic":
-                comps.append(Quadratic(
+                )
+            elif base in ("quadratic", "quad"):
+                comp = Quadratic(
                     q=Parameter(value=fields.get("q", 0.0), fixed=True)
-                ))
+                )
             elif base in ("keplerian", "kep", "lite", "LiTE"):
                 t0_val = fields.get("T0", fields.get("T", 0.0))
-                comps.append(Keplerian(
+                comp = Keplerian(
                     amp=Parameter(value=fields.get("amp", 0.0), fixed=True),
                     e=Parameter(value=fields.get("e", 0.0), fixed=True),
                     omega=Parameter(value=fields.get("omega", 0.0), fixed=True),
                     P=Parameter(value=fields.get("P", 1.0), fixed=True),
                     T0=Parameter(value=t0_val, fixed=True),
                     name=pref,
-                ))
-            elif base == "sinusoidal":
-                comps.append(Sinusoidal(
+                )
+            elif base in ("sinusoidal", "sin"):
+                comp = Sinusoidal(
                     amp=Parameter(value=fields.get("amp", 0.0), fixed=True),
                     P=Parameter(value=fields.get("P", 1.0), fixed=True)
-                ))
+                )
+            
+            if comp is not None:
+                comps.append(comp)
+                valid_order.append(pref)
+        
+        order = valid_order
 
         x = np.asarray(data.data[x_col].to_numpy(), dtype=float)
         xmin, xmax = (float(np.min(x)), float(np.max(x))) if x.size else (0.0, 1.0)
@@ -169,7 +177,71 @@ class Plot:
         xline = np.linspace(xmin - margin, xmax + margin, n_points)
 
         band = None
-        if plot_band:
+        y_total_best = np.zeros_like(xline)
+
+        # 1. Best Fallback: Use y_model_dense if it exists in idata
+        if "y_model_dense" in idata.posterior and "dense_x" in idata.posterior:
+            y_dense_post = idata.posterior["y_model_dense"]
+            x_dense_vals = idata.posterior["dense_x"].values[0, 0] # Constant across chains/draws
+            
+            y_fit = y_dense_post.median(dim=("chain", "draw")).values
+            
+            if not comps:
+                if ax is None:
+                    fig, ax = plt.subplots(figsize=(10.0, 5.4))
+                ax.plot(x_dense_vals, y_fit, color="red", lw=2.6, label="Fit (Median)")
+                
+                if plot_band:
+                    low = y_dense_post.quantile(0.16, dim=("chain", "draw")).values
+                    high = y_dense_post.quantile(0.84, dim=("chain", "draw")).values
+                    ax.fill_between(x_dense_vals, low, high, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                return ax
+
+        # 2. Secondary Fallback: Interpolate y_model at observation points
+        if "y_model" in idata.posterior and len(x) == idata.posterior["y_model"].shape[-1]:
+            y_model_post = idata.posterior["y_model"]
+            y_total_obs = y_model_post.median(dim=("chain", "draw")).values
+            
+            # If we reconstructed no components, we use y_model points as the fit line
+            if not comps:
+                if ax is None:
+                    fig, ax = plt.subplots(figsize=(10.0, 5.4))
+                
+                # Handle duplicates and sort using pandas for robustness
+                import pandas as pd
+                df_temp = pd.DataFrame({'x': x, 'y': y_total_obs})
+                
+                # Check for uncertainty band data
+                if plot_band:
+                    df_temp['low'] = y_model_post.quantile(0.16, dim=("chain", "draw")).values
+                    df_temp['high'] = y_model_post.quantile(0.84, dim=("chain", "draw")).values
+                
+                # Group by x and take mean to handle multiple observations at the same cycle
+                df_avg = df_temp.groupby('x').mean().sort_index()
+                xs_clean = df_avg.index.values
+                ys_clean = df_avg['y'].values
+                
+                try:
+                    from scipy.interpolate import make_interp_spline
+                    # Create a smooth grid for plotting (longer than the data range if requested)
+                    x_smooth = np.linspace(xs_clean.min(), xs_clean.max(), 1000)
+                    spl = make_interp_spline(xs_clean, ys_clean, k=3)
+                    y_smooth = spl(x_smooth)
+                    ax.plot(x_smooth, y_smooth, color="red", lw=2.6, label="Fit (Median)")
+                    
+                    if plot_band:
+                        spl_low = make_interp_spline(xs_clean, df_avg['low'].values, k=3)
+                        spl_high = make_interp_spline(xs_clean, df_avg['high'].values, k=3)
+                        ax.fill_between(x_smooth, spl_low(x_smooth), spl_high(x_smooth), color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                except Exception:
+                    # Fallback to simple line if scipy.interpolate fails
+                    ax.plot(xs_clean, ys_clean, color="red", lw=2.6, label="Fit (Median)")
+                    if plot_band:
+                        ax.fill_between(xs_clean, df_avg['low'].values, df_avg['high'].values, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                
+                return ax
+
+        if plot_band and comps:
             subset = az.extract(idata, num_samples=200)
             y_samples = []
             n_draws = subset.sample.size

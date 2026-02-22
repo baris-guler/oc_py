@@ -25,7 +25,7 @@ class OCPyMC(OC):
         draws: int = 2000, 
         tune: int = 2000, 
         chains: int = 4, 
-        target_accept: float = 0.9, 
+        target_accept: Optional[float] = None, 
         random_seed: Optional[int] = None, 
         progressbar: bool = True, 
         return_model: bool = False,
@@ -93,24 +93,43 @@ class OCPyMC(OC):
             pm.Deterministic("y_model", mu_total)
             pm.Normal("y_obs", mu=mu_total, sigma=sigma_i, observed=y)
 
+            # Add a dense grid for smooth plotting
+            xmin, xmax = np.min(x), np.max(x)
+            margin = (xmax - xmin) * 0.05
+            dense_x_vals = np.linspace(xmin - margin, xmax + margin, 500)
+            
+            mus_dense = []
+            for comp, pref in zip(model_components, prefixes):
+                mus_dense.append(comp.model_func(dense_x_vals, **comp_rvs[pref]))
+            
+            mu_total_dense = mus_dense[0] if len(mus_dense) == 1 else sum(mus_dense)
+            pm.Deterministic("y_model_dense", mu_total_dense)
+            # Store dense_x too so visualization knows where to plot
+            pm.Deterministic("dense_x", pt.as_tensor_variable(dense_x_vals))
+
             if return_model:
                 return model
 
             if "cores" not in kwargs:
-                kwargs["cores"] = min(chains, 4)
+                kwargs["cores"] = chains
             
-            if "init" not in kwargs:
-                kwargs["init"] = "adapt_diag"
+            # Pack sample arguments
+            s_kwargs = kwargs.copy()
+            if target_accept is not None:
+                s_kwargs["target_accept"] = target_accept
+            
+            # init is only for NUTS, but PyMC usually handles it if NUTS is auto-selected.
+            # However, if target_accept is None and we don't specify init, PyMC might behave better 
+            # when it defaults to other samplers.
 
             idata = pm.sample(
                 draws=draws, 
                 tune=tune, 
                 chains=chains, 
-                target_accept=target_accept, 
                 random_seed=random_seed, 
                 return_inferencedata=True, 
                 progressbar=progressbar,
-                **kwargs
+                **s_kwargs
             )
 
         return idata

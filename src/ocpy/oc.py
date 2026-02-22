@@ -41,6 +41,40 @@ class ModelComponent(ModelComponentModel):
     def model_function(self):
         return self.model_func
 
+    def update_parameters(self, params_dict: Dict[str, float]):
+        """
+        Update the parameter values of the component from a dictionary.
+        """
+        for k, v in params_dict.items():
+            if k in self.params:
+                self.params[k].value = float(v)
+        return self
+
+    def update_from_idata(self, idata, group="posterior", stat="median"):
+        """
+        Update parameter values from PyMC InferenceData.
+        """
+        import arviz as az
+        prefix = getattr(self, "name", "")
+        
+        # Get the variables for this component
+        var_names = [v for v in idata[group].data_vars if v.startswith(f"{prefix}_")]
+        
+        params_to_update = {}
+        for vn in var_names:
+            pname = vn[len(prefix)+1:]
+            if pname in self.params:
+                if stat == "median":
+                    val = idata[group][vn].median(dim=("chain", "draw")).item()
+                elif stat == "mean":
+                    val = idata[group][vn].mean(dim=("chain", "draw")).item()
+                else:
+                    # Fallback to first sample
+                    val = idata[group][vn].values[0, 0]
+                params_to_update[pname] = float(val)
+        
+        return self.update_parameters(params_to_update)
+
     @staticmethod
     def _param(v: NumberOrParam) -> Parameter:
         if isinstance(v, Parameter):

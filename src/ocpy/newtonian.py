@@ -4,6 +4,13 @@ from typing import Optional, Dict, List, Any, Union
 from ocpy.oc import ModelComponent, Parameter
 from ocpy.custom_types import NumberOrParam
 
+try:
+    import pytensor
+    import pytensor.tensor as pt
+    HAS_PYTENSOR = True
+except ImportError:
+    HAS_PYTENSOR = False
+
 class NewtonianModel(ModelComponent):
     """
     Newtonian n-body model component using REBOUND for ETV modeling.
@@ -60,6 +67,8 @@ class NewtonianModel(ModelComponent):
         self.integration_grid = np.array(integration_grid) if integration_grid is not None else None
         
         self.central_mass = self._param(central_mass)
+        if self.central_mass.min is None:
+            self.central_mass.min = 0.0
         self.bodies_data = bodies or []
         self.orbit_type = orbit_type
         
@@ -77,7 +86,16 @@ class NewtonianModel(ModelComponent):
             
             for element in ["a", "P", "e", "Omega", "omega", "M", "T"]:
                 if element in body:
-                    self.params[f"{prefix}{element}"] = self._param(body[element])
+                    p = self._param(body[element])
+                    
+                    # Automate bounds if not provided
+                    if element in ["m", "a", "P"] and p.min is None:
+                        p.min = 0.0
+                    elif element == "e":
+                        if p.min is None: p.min = 0.0
+                        if p.max is None: p.max = 1.0
+                    
+                    self.params[f"{prefix}{element}"] = p
 
     def _setup_rebound(self, params_dict: Dict[str, float]) -> rebound.Simulation:
         sim = rebound.Simulation()
@@ -195,21 +213,10 @@ class NewtonianModel(ModelComponent):
         
         return outputs
 
-    def model_func(self, x, **kwargs) -> np.ndarray:
+    def _calculate_etv(self, x, params_float) -> np.ndarray:
         """
-        Function for ocpy fitting. Calculates ETVs (T_obs - T_calc).
-        x can be cycle (E) or time (BJD).
+        Core ETV calculation logic using rebound.
         """
-        params_float = {}
-        for k, v in kwargs.items():
-            if hasattr(v, "value"):
-                params_float[k] = float(v.value)
-            else:
-                params_float[k] = float(v)
-        
-        if "central_mass" not in params_float:
-            params_float["central_mass"] = float(self.central_mass.value)
-
         times = x * self.P_ref
         
         # Check if a custom integration grid is provided
@@ -266,6 +273,70 @@ class NewtonianModel(ModelComponent):
             
         # Flip sign to match analytical LiTE convention
         return -z_primary / c
+
+    def model_func(self, x, **kwargs) -> np.ndarray:
+        """
+        Function for ocpy fitting. Calculates ETVs (T_obs - T_calc).
+        x can be cycle (E) or time (BJD).
+        """
+        # Check if any input is a symbolic pytensor variable
+        is_symbolic = False
+        if HAS_PYTENSOR:
+            for v in kwargs.values():
+                if isinstance(v, pt.TensorVariable):
+                    is_symbolic = True
+                    break
+        
+        if is_symbolic:
+            # Use NewtonianOp to handle symbolic variables
+            op = NewtonianOp(self)
             
-        return np.zeros_like(x)
+            # Ensure all params are present even if not in kwargs (use fixed values)
+            all_kwargs = {}
+            for k, p in self.params.items():
+                if k in kwargs:
+                    all_kwargs[k] = kwargs[k]
+                else:
+                    all_kwargs[k] = pt.as_tensor_variable(float(p.value))
+            
+            # Sort keys to match Op.perform
+            keys = sorted(all_kwargs.keys())
+            inputs = [pt.as_tensor_variable(x)] + [all_kwargs[k] for k in keys]
+            return op(*inputs)
+
+        params_float = {}
+        for k, v in kwargs.items():
+            if hasattr(v, "value"):
+                params_float[k] = float(v.value)
+            else:
+                params_float[k] = float(v)
+        
+        if "central_mass" not in params_float:
+            params_float["central_mass"] = float(self.central_mass.value)
+
+        return self._calculate_etv(x, params_float)
+
+if HAS_PYTENSOR:
+    class NewtonianOp(pt.Op):
+        """
+        PyTensor Op wrapper for NewtonianModel.
+        """
+        def __init__(self, model: NewtonianModel):
+            self.model = model
+            self.param_keys = sorted(model.params.keys())
+
+        def make_node(self, x, *args):
+            x = pt.as_tensor_variable(x)
+            args = [pt.as_tensor_variable(a) for a in args]
+            # Output is a double vector
+            return pytensor.graph.basic.Apply(self, [x] + args, [x.type.make_variable()])
+
+        def perform(self, node, inputs, outputs):
+            x = inputs[0]
+            param_vals = inputs[1:]
+            
+            params_float = {k: float(v) for k, v in zip(self.param_keys, param_vals)}
+            
+            result = self.model._calculate_etv(x, params_float)
+            outputs[0][0] = np.asarray(result, dtype=node.outputs[0].dtype)
 
