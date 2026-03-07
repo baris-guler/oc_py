@@ -28,5 +28,5 @@ class Fixer:
             return np.array([data] * len(reference))
 
     @staticmethod
-    def none_to_nan(data_frame):
-        return data_frame.replace({None: np.nan})
+    def none_to_nan(df):
+        return df.replace({None: np.nan})

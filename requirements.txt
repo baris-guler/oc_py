@@ -1,5 +1,11 @@
-astropy==7.1.1
-numpy==2.3.4
-pandas==2.3.3
+arviz==0.22.0
+astropy==7.2.0
+corner==2.2.3
 lmfit==1.3.4
+matplotlib==3.10.7
+numpy==2.3.5
+pandas==2.3.3
 pymc==5.26.1
+pytensor==2.35.1
+rebound==4.4.11
+typing_extensions==4.15.0

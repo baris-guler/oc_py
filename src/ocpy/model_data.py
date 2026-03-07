@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, Union, List, Dict, Tuple, Callable
 from typing_extensions import Self
+from ocpy.oc import OC
 
 import pandas as pd
 from numpy._typing import NDArray
@@ -53,7 +54,7 @@ class DataModel(ABC):
         """Calculates weights using errors"""
 
     @abstractmethod
-    def calculate_oc(self, reference_period: float, reference_minimum: float) -> Self:
+    def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit") -> OC:
         """Calculates the O-C for this Data"""
 
     @abstractmethod

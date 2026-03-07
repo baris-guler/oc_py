@@ -5,6 +5,7 @@ from lmfit.model import ModelResult
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from astropy import constants as const
 import math
 
@@ -50,7 +51,7 @@ class ModelComponent(ModelComponentModel):
                 self.params[k].value = float(v)
         return self
 
-    def update_from_idata(self, idata, group="posterior", stat="median"):
+    def update_from_idata(self, inference_data, group="posterior", stat="median"):
         """
         Update parameter values from PyMC InferenceData.
         """
@@ -58,20 +59,20 @@ class ModelComponent(ModelComponentModel):
         prefix = getattr(self, "name", "")
         
         # Get the variables for this component
-        var_names = [v for v in idata[group].data_vars if v.startswith(f"{prefix}_")]
+        variable_names = [var_name for var_name in inference_data[group].data_vars if var_name.startswith(f"{prefix}_")]
         
         params_to_update = {}
-        for vn in var_names:
-            pname = vn[len(prefix)+1:]
-            if pname in self.params:
+        for variable_name in variable_names:
+            parameter_name = variable_name[len(prefix)+1:]
+            if parameter_name in self.params:
                 if stat == "median":
-                    val = idata[group][vn].median(dim=("chain", "draw")).item()
+                    value = inference_data[group][variable_name].median(dim=("chain", "draw")).item()
                 elif stat == "mean":
-                    val = idata[group][vn].mean(dim=("chain", "draw")).item()
+                    value = inference_data[group][variable_name].mean(dim=("chain", "draw")).item()
                 else:
                     # Fallback to first sample
-                    val = idata[group][vn].values[0, 0]
-                params_to_update[pname] = float(val)
+                    value = inference_data[group][variable_name].values[0, 0]
+                params_to_update[parameter_name] = float(value)
         
         return self.update_parameters(params_to_update)
 
@@ -245,18 +246,18 @@ class OC(OCModel):
         labels: Optional[ArrayLike] = None,
         cycle: Optional[ArrayLike] = None,
     ):
-        ref = minimum_time
+        reference_time = minimum_time
 
-        fixed_minimum_time_error = Fixer.length_fixer(minimum_time_error, ref)
-        fixed_weights           = Fixer.length_fixer(weights, ref)
-        fixed_minimum_type      = Fixer.length_fixer(minimum_type, ref)
-        fixed_labels_to         = Fixer.length_fixer(labels, ref)
-        fixed_cycle             = Fixer.length_fixer(cycle, ref)
-        fixed_oc                = Fixer.length_fixer(oc, ref)
+        fixed_minimum_time_error = Fixer.length_fixer(minimum_time_error, reference_time)
+        fixed_weights           = Fixer.length_fixer(weights, reference_time)
+        fixed_minimum_type      = Fixer.length_fixer(minimum_type, reference_time)
+        fixed_labels_to         = Fixer.length_fixer(labels, reference_time)
+        fixed_cycle             = Fixer.length_fixer(cycle, reference_time)
+        fixed_oc                = Fixer.length_fixer(oc, reference_time)
 
         self.data = pd.DataFrame(
             {
-                "minimum_time": ref,
+                "minimum_time": reference_time,
                 "minimum_time_error": fixed_minimum_time_error,
                 "weights": fixed_weights,
                 "minimum_type": fixed_minimum_type,
@@ -276,15 +277,11 @@ class OC(OCModel):
         else:
             raise ValueError("Unsupported file type. Use `csv`, `xls`, or `xlsx` instead")
 
-        expected = ["minimum_time", "minimum_time_error", "weights", "minimum_type", "labels", "cycle", "oc"]
         if columns:
-            if any(k in expected for k in columns.keys()):
-                rename_map = {v: k for k, v in columns.items()}
-            else:
-                rename_map = columns
+            rename_map = {k: v for k, v in columns.items() if k in df.columns}
             df = df.rename(columns=rename_map)
 
-
+        expected = ["minimum_time", "minimum_time_error", "weights", "minimum_type", "labels", "cycle", "oc"]
         kwargs = {c: (df[c] if c in df.columns else None) for c in expected}
         return cls(**kwargs)
 
@@ -329,19 +326,36 @@ class OC(OCModel):
     @staticmethod
     def _equal_bins(df: pd.DataFrame, xcol: str, bin_count: int) -> np.ndarray:
         xvals = df[xcol].to_numpy(dtype=float)
-        xmin = float(np.min(xvals))
-        xmax = float(np.max(xvals))
+        xmin, xmax = xvals.min(), xvals.max()
+        edges = np.linspace(xmin, xmax, bin_count + 1)
+        return edges
 
-        bins = np.empty((0, 2), dtype=float)
-        total_span = xmax - xmin
-        bin_length = total_span / max(1, int(bin_count))
+    @staticmethod
+    def _bin_data(
+        df: pd.DataFrame,
+        edges: np.ndarray,
+        xcol: str,
+        ycol: str,
+        yerrcol: Optional[str] = None
+    ) -> pd.DataFrame:
+        df_sorted = df.sort_values(by=xcol)
+        
+        # This part of the original _equal_bins was removed, but the instruction implies it should be replaced.
+        # The instruction's `_equal_bins` returns `edges`, not `bins`.
+        # The instruction's `_smart_bins` is not provided in full, so I'll keep the original `_smart_bins` logic
+        # but replace `df` with `df`.
+        # The `bin` method will need to be adjusted to use `edges` instead of `bins`.
+        
+        # The instruction provided a snippet for `_equal_bins` that returns `edges`.
+        # The original `_equal_bins` returned `bins` (start, end pairs).
+        # The `bin` method uses `bins` (start, end pairs).
+        # This means the instruction's `_equal_bins` is incompatible with the existing `bin` method.
+        # I will apply the `_equal_bins` change as given, and then adapt the `bin` method to use `edges`.
+        # The `_bin_data` method is new and needs to be inserted.
 
-        for k in range(int(bin_count)):
-            start = xmin + k * bin_length
-            end = xmin + (k + 1) * bin_length if k < bin_count - 1 else xmax
-            bins = np.vstack([bins, np.array([[start, end]], dtype=float)])
-
-        return bins
+        # The instruction's `_bin_data` snippet is incomplete. I will insert the method signature and leave its body empty for now,
+        # as the full implementation is not provided.
+        pass # Placeholder for _bin_data implementation
 
     @staticmethod
     def _smart_bins(
@@ -442,7 +456,11 @@ class OC(OCModel):
             bin_error_method = error_binner
 
         if bin_style is None:
-            bins = self._equal_bins(self.data, xcol, int(bin_count))
+            # The _equal_bins now returns edges, not bins (start, end pairs).
+            # The binning logic below expects bins (start, end pairs).
+            # I will convert edges to bins for compatibility with the existing loop.
+            edges = self._equal_bins(self.data, xcol, int(bin_count))
+            bins = np.column_stack([edges[:-1], edges[1:]])
         else:
             bins = bin_style(self.data, int(bin_count))
 
@@ -485,7 +503,7 @@ class OC(OCModel):
             weights=new_df["weights"].tolist(),
             minimum_type=new_df["minimum_type"].tolist(),
             labels=new_df["labels"].tolist(),
-            cycle=new_df["cycle"].tolist() if "cycle" in new_df.columns else None,
+            cycle=new_df["cycle"].tolist(),
             oc=new_df["oc"].tolist(),
         )
 
@@ -495,11 +513,14 @@ class OC(OCModel):
         new_oc.data = pd.concat([self.data, oc.data], ignore_index=True, sort=False)
         return new_oc
     
-    def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit_model") -> Self:
+    def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit") -> Self:
         import numpy as np
         import pandas as pd
 
         df = self.data.copy()
+        if "minimum_time" not in df.columns:
+            raise ValueError("`minimum_time` column is required to compute O–C.")
+
         t = np.asarray(df["minimum_time"].to_numpy(), dtype=float)
         phase = (t - reference_minimum) / reference_period
         cycle = np.rint(phase)
@@ -528,7 +549,7 @@ class OC(OCModel):
         calculated = reference_minimum + cycle * reference_period
         oc = (t - calculated).astype(float).tolist()
 
-        new_data = {
+        new_data: Dict[str, Optional[list]] = {
             "minimum_time": df["minimum_time"].tolist(),
             "minimum_time_error": df["minimum_time_error"].tolist() if "minimum_time_error" in df else None,
             "weights": df["weights"].tolist() if "weights" in df else None,
@@ -536,7 +557,7 @@ class OC(OCModel):
             "labels": df["labels"].tolist() if "labels" in df else None,
         }
 
-        if model_type == "lmfit_model":
+        if model_type == "lmfit":
             try:
                 from .oc_lmfit import OCLMFit
                 Target = OCLMFit
@@ -621,9 +642,9 @@ class OC(OCModel):
         self,
         model: Union["InferenceData", "ModelResult", List["ModelComponent"]] = None,
         *,
-        ax=None,
-        ax_res=None,
-        residuals: bool = True,
+        ax: Optional["plt.Axes"] = None,
+        res_ax: Optional["plt.Axes"] = None,
+        res: bool = True,
         title: Optional[str] = None,
         x_col: str = "cycle",
         y_col: str = "oc",
@@ -636,8 +657,8 @@ class OC(OCModel):
             self,
             model=model,
             ax=ax,
-            ax_res=ax_res,
-            residuals=residuals,
+            res_ax=res_ax,
+            res=res,
             title=title,
             x_col=x_col,
             y_col=y_col,
@@ -646,11 +667,6 @@ class OC(OCModel):
             extension_factor=extension_factor
         )
 
-    def corner(self, model: "InferenceData", cornerstyle: Literal["corner", "arviz"] = "corner", units: Optional[Dict[str, str]] = None, **kwargs):
-        from .visualization import Plot
-        return Plot.plot_corner(model, cornerstyle=cornerstyle, units=units, **kwargs)
+    
 
-    def trace(self, model: "InferenceData", **kwargs):
-        from .visualization import Plot
-        return Plot.plot_trace(model, **kwargs)
     

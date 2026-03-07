@@ -14,160 +14,160 @@ from .oc import Linear, Quadratic, Keplerian, Sinusoidal, Parameter
 class Plot:
 
 
+    @staticmethod
     def plot_data(
         data: "OC", 
         *, 
-        ax=None, 
+        ax: Optional[plt.Axes] = None, 
         x_col: str = "cycle", 
         y_col: str = "oc",
         plot_kwargs: Optional[dict] = None
-    ):
-        draw_ax = ax
-        if draw_ax is None:
-            fig, draw_ax = plt.subplots(figsize=(10.0, 5.4))
-
-        x = np.asarray(data.data[x_col].to_numpy(), dtype=float)
-        y = np.asarray(data.data[y_col].to_numpy(), dtype=float)
+    ) -> plt.Axes:
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10.0, 5.4))
         
-        yerr = None
-        if "minimum_time_error" in data.data.columns:
-             yerr = np.asarray(data.data["minimum_time_error"].to_numpy(), dtype=float)
+        
+        # ax = ax # Not needed anymore
+        
+        plot_kwargs = dict(fmt="o", markersize=4.5, color="tab:blue", alpha=0.8, capsize=2, label="Data") | (plot_kwargs or {})
 
-        user_kwargs = (plot_kwargs or {}).copy()
-        if "s" in user_kwargs:
-            user_kwargs["markersize"] = user_kwargs.pop("s")
-        if "c" in user_kwargs:
-            user_kwargs["color"] = user_kwargs.pop("c")
-
-        default_kwargs = dict(fmt='o', markersize=3, alpha=0.8, elinewidth=0.8, capsize=1, zorder=1)
-        plot_kwargs = default_kwargs | user_kwargs
-
-        labels = data.data.get("labels", None)
-        if labels is not None:
-            unique_labels = sorted(list(set(labels.dropna().unique())))
+        x_values = np.asarray(data.data[x_col].to_numpy(), dtype=float)
+        y_values = np.asarray(data.data[y_col].to_numpy(), dtype=float)
+        
+        if "labels" in data.data.columns:
+            labels_data = data.data["labels"]
+            unique_labels = sorted(list(set(labels_data.dropna().unique())))
+            
             if len(unique_labels) > 0:
-                cmap = plt.get_cmap("tab10")
-                for i, lbl in enumerate(unique_labels):
-                    mask = (labels == lbl).to_numpy(dtype=bool)
-                    if not np.any(mask):
-                        continue
+                colormap = plt.get_cmap("tab10")
+                for index, label in enumerate(unique_labels):
+                    mask = (labels_data == label).to_numpy(dtype=bool)
+                    if not np.any(mask): continue
                     
-                    color = cmap(i % 10)
+                    color = colormap(index % 10)
+                    local_kwargs = plot_kwargs.copy()
+                    local_kwargs["color"] = color
+                    local_kwargs["label"] = f"Data ({label})"
                     
-
+                    y_error = None
+                    if "minimum_time_error" in data.data.columns:
+                        y_error = np.asarray(data.data["minimum_time_error"].to_numpy(), dtype=float)[mask]
                     
-                    label_kwargs = plot_kwargs.copy()
-                    label_kwargs.update({"color": color, "label": str(lbl)})
-                    
-                    # Filter data
-                    xi = x[mask]
-                    yi = y[mask]
-                    yerri = yerr[mask] if yerr is not None else None
-                    
-                    draw_ax.errorbar(xi, yi, yerr=yerri, **label_kwargs)
+                    ax.errorbar(x_values[mask], y_values[mask], yerr=y_error, **local_kwargs)
                 
-                mask_nan = labels.isna().to_numpy(dtype=bool)
-                if np.any(mask_nan):
-                     label_kwargs = plot_kwargs.copy()
-                     label_kwargs.update({"color": "gray", "label": "Unlabeled"})
-                     draw_ax.errorbar(x[mask_nan], y[mask_nan], yerr=(yerr[mask_nan] if yerr is not None else None), **label_kwargs)
-
-                draw_ax.legend()
+                # Unlabeled data
+                mask_unlabeled = labels_data.isna().to_numpy(dtype=bool)
+                if np.any(mask_unlabeled):
+                    local_kwargs = plot_kwargs.copy()
+                    local_kwargs["color"] = "gray"
+                    local_kwargs["label"] = "Data (unlabeled)"
+                    y_error = None
+                    if "minimum_time_error" in data.data.columns:
+                        y_error = np.asarray(data.data["minimum_time_error"].to_numpy(), dtype=float)[mask_unlabeled]
+                    ax.errorbar(x_values[mask_unlabeled], y_values[mask_unlabeled], yerr=y_error, **local_kwargs)
+                
+                ax.legend()
             else:
-                 plot_kwargs.setdefault("color", "tab:blue")
-                 draw_ax.errorbar(x, y, yerr=yerr, **plot_kwargs)
+                 ax.errorbar(x_values, y_values, yerr=(np.asarray(data.data["minimum_time_error"].to_numpy(), dtype=float) if "minimum_time_error" in data.data.columns else None), **plot_kwargs)
         else:
-            plot_kwargs.setdefault("color", "tab:blue")
-            draw_ax.errorbar(x, y, yerr=yerr, **plot_kwargs)
+            y_error = None
+            if "minimum_time_error" in data.data.columns:
+                y_error = np.asarray(data.data["minimum_time_error"].to_numpy(), dtype=float)
+                
+            ax.errorbar(x_values, y_values, yerr=y_error, **plot_kwargs)
         
-        draw_ax.set_ylabel("O−C")
-        draw_ax.set_xlabel(x_col.capitalize())
-        draw_ax.grid(True, alpha=0.25)
+        ax.set_ylabel("O−C")
+        ax.set_xlabel(x_col.capitalize())
+        ax.grid(True, alpha=0.25)
         
-        return draw_ax
+        return ax
 
     @classmethod
     def plot_model_pymc(
         cls,
-        idata,
+        inference_data: az.InferenceData,
         data: "OCPyMC",
         *,
-        ax=None,
+        ax: Optional[plt.Axes] = None,
         x_col: str = "cycle",
         n_points: int = 800,
         sum_kwargs: Optional[dict] = None,
         comp_kwargs: Optional[dict] = None,
+        plot_kwargs: Optional[dict] = None,
         plot_band: bool = True,
         extension_factor: float = 0.05
-    ):
+    ) -> plt.Axes:
+        if ax is None:
+            ax = plt.gca()
 
-        def split_name(vn: str):
-            i = vn.rfind("_")
-            return (vn[:i], vn[i + 1 :]) if i != -1 else (None, None)
 
-        def parse_prefix(pref: str):
-            m = re.match(r"^([A-Za-z_]+?)(\d+)?$", pref)
-            if not m:
-                return (pref, 0)
-            base = m.group(1)
-            idx = int(m.group(2)) if m.group(2) is not None else 0
-            return (base, idx)
+        def split_name(variable_name: str):
+            underscore_index = variable_name.rfind("_")
+            return (variable_name[:underscore_index], variable_name[underscore_index + 1 :]) if underscore_index != -1 else (None, None)
 
-        scalars = [vn for vn, da in idata.posterior.data_vars.items() if getattr(da, "ndim", 0) == 2 and vn not in {"y_model", "y_model_dense", "y_obs"}]
+        def parse_prefix(prefix_str: str):
+            match = re.match(r"^([A-Za-z_]+?)(\d+)?$", prefix_str)
+            if not match:
+                return (prefix_str, 0)
+            base = match.group(1)
+            index = int(match.group(2)) if match.group(2) is not None else 0
+            return (base, index)
+
+        scalars = [variable_name for variable_name, data_array in inference_data.posterior.data_vars.items() if getattr(data_array, "ndim", 0) == 2 and variable_name not in {"y_model", "y_model_dense", "y_obs"}]
         
         if not scalars:
             return ax
 
-        med: dict[str, float] = {}
-        for vn in scalars:
-            da = idata.posterior[vn]
-            val = da.median(dim=("chain", "draw")).item()
-            med[vn] = float(val)
+        medians_dict: dict[str, float] = {}
+        for variable_name in scalars:
+            data_array = inference_data.posterior[variable_name]
+            value = data_array.median(dim=("chain", "draw")).item()
+            medians_dict[variable_name] = float(value)
 
         groups: dict[str, dict[str, float]] = {}
-        for vn, val in med.items():
-            pref, pname = split_name(vn)
-            if pref is None:
+        for variable_name, value in medians_dict.items():
+            prefix, param_name = split_name(variable_name)
+            if prefix is None:
                 continue
-            groups.setdefault(pref, {})[pname] = val
+            groups.setdefault(prefix, {})[param_name] = value
 
         order = sorted(groups.keys(), key=lambda p: parse_prefix(p))
-        comps = []
+        components = []
         valid_order = []
         
-        for pref in order:
-            base, _ = parse_prefix(pref)
-            fields = groups[pref]
-            comp = None
+        for prefix in order:
+            base, _ = parse_prefix(prefix)
+            fields = groups[prefix]
+            component = None
 
             if base in ("linear", "lin"):
-                comp = Linear(
+                component = Linear(
                     a=Parameter(value=fields.get("a", 0.0), fixed=True),
                     b=Parameter(value=fields.get("b", 0.0), fixed=True)
                 )
             elif base in ("quadratic", "quad"):
-                comp = Quadratic(
+                component = Quadratic(
                     q=Parameter(value=fields.get("q", 0.0), fixed=True)
                 )
             elif base in ("keplerian", "kep", "lite", "LiTE"):
-                t0_val = fields.get("T0", fields.get("T", 0.0))
-                comp = Keplerian(
+                t0_value = fields.get("T0", fields.get("T", 0.0))
+                component = Keplerian(
                     amp=Parameter(value=fields.get("amp", 0.0), fixed=True),
                     e=Parameter(value=fields.get("e", 0.0), fixed=True),
                     omega=Parameter(value=fields.get("omega", 0.0), fixed=True),
                     P=Parameter(value=fields.get("P", 1.0), fixed=True),
-                    T0=Parameter(value=t0_val, fixed=True),
-                    name=pref,
+                    T0=Parameter(value=t0_value, fixed=True),
+                    name=prefix,
                 )
             elif base in ("sinusoidal", "sin"):
-                comp = Sinusoidal(
+                component = Sinusoidal(
                     amp=Parameter(value=fields.get("amp", 0.0), fixed=True),
                     P=Parameter(value=fields.get("P", 1.0), fixed=True)
                 )
             
-            if comp is not None:
-                comps.append(comp)
-                valid_order.append(pref)
+            if component is not None:
+                components.append(component)
+                valid_order.append(prefix)
         
         order = valid_order
 
@@ -179,31 +179,33 @@ class Plot:
         band = None
         y_total_best = np.zeros_like(xline)
 
-        # 1. Best Fallback: Use y_model_dense if it exists in idata
-        if "y_model_dense" in idata.posterior and "dense_x" in idata.posterior:
-            y_dense_post = idata.posterior["y_model_dense"]
-            x_dense_vals = idata.posterior["dense_x"].values[0, 0] # Constant across chains/draws
+        # 1. Best Fallback: Use y_model_dense if it exists in inference_data
+        if "y_model_dense" in inference_data.posterior and "dense_x" in inference_data.posterior:
+            y_dense_post = inference_data.posterior["y_model_dense"]
+            x_dense_vals = inference_data.posterior["dense_x"].values[0, 0] # Constant across chains/draws
             
             y_fit = y_dense_post.median(dim=("chain", "draw")).values
             
-            if not comps:
+            if not components:
                 if ax is None:
                     fig, ax = plt.subplots(figsize=(10.0, 5.4))
-                ax.plot(x_dense_vals, y_fit, color="red", lw=2.6, label="Fit (Median)")
+                
+                fit_color = (plot_kwargs or {}).get("color", "red")
+                ax.plot(x_dense_vals, y_fit, color=fit_color, lw=2.6, label="Fit (Median)")
                 
                 if plot_band:
                     low = y_dense_post.quantile(0.16, dim=("chain", "draw")).values
                     high = y_dense_post.quantile(0.84, dim=("chain", "draw")).values
-                    ax.fill_between(x_dense_vals, low, high, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                    ax.fill_between(x_dense_vals, low, high, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
                 return ax
 
         # 2. Secondary Fallback: Interpolate y_model at observation points
-        if "y_model" in idata.posterior and len(x) == idata.posterior["y_model"].shape[-1]:
-            y_model_post = idata.posterior["y_model"]
+        if "y_model" in inference_data.posterior and len(x) == inference_data.posterior["y_model"].shape[-1]:
+            y_model_post = inference_data.posterior["y_model"]
             y_total_obs = y_model_post.median(dim=("chain", "draw")).values
             
             # If we reconstructed no components, we use y_model points as the fit line
-            if not comps:
+            if not components:
                 if ax is None:
                     fig, ax = plt.subplots(figsize=(10.0, 5.4))
                 
@@ -217,46 +219,47 @@ class Plot:
                     df_temp['high'] = y_model_post.quantile(0.84, dim=("chain", "draw")).values
                 
                 # Group by x and take mean to handle multiple observations at the same cycle
-                df_avg = df_temp.groupby('x').mean().sort_index()
-                xs_clean = df_avg.index.values
-                ys_clean = df_avg['y'].values
+                df_average = df_temp.groupby('x').mean().sort_index()
+                xs_clean = df_average.index.values
+                ys_clean = df_average['y'].values
                 
+                fit_color = (plot_kwargs or {}).get("color", "red")
                 try:
                     from scipy.interpolate import make_interp_spline
                     # Create a smooth grid for plotting (longer than the data range if requested)
                     x_smooth = np.linspace(xs_clean.min(), xs_clean.max(), 1000)
                     spl = make_interp_spline(xs_clean, ys_clean, k=3)
                     y_smooth = spl(x_smooth)
-                    ax.plot(x_smooth, y_smooth, color="red", lw=2.6, label="Fit (Median)")
+                    ax.plot(x_smooth, y_smooth, color=fit_color, lw=2.6, label="Fit (Median)")
                     
                     if plot_band:
-                        spl_low = make_interp_spline(xs_clean, df_avg['low'].values, k=3)
-                        spl_high = make_interp_spline(xs_clean, df_avg['high'].values, k=3)
-                        ax.fill_between(x_smooth, spl_low(x_smooth), spl_high(x_smooth), color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                        spl_low = make_interp_spline(xs_clean, df_average['low'].values, k=3)
+                        spl_high = make_interp_spline(xs_clean, df_average['high'].values, k=3)
+                        ax.fill_between(x_smooth, spl_low(x_smooth), spl_high(x_smooth), color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
                 except Exception:
                     # Fallback to simple line if scipy.interpolate fails
-                    ax.plot(xs_clean, ys_clean, color="red", lw=2.6, label="Fit (Median)")
+                    ax.plot(xs_clean, ys_clean, color=fit_color, lw=2.6, label="Fit (Median)")
                     if plot_band:
-                        ax.fill_between(xs_clean, df_avg['low'].values, df_avg['high'].values, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                        ax.fill_between(xs_clean, df_average['low'].values, df_average['high'].values, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
                 
                 return ax
 
-        if plot_band and comps:
-            subset = az.extract(idata, num_samples=200)
+        if plot_band and components:
+            subset = az.extract(inference_data, num_samples=200)
             y_samples = []
             n_draws = subset.sample.size
             
-            for s in range(n_draws):
+            for sample_index in range(n_draws):
                 y_total = np.zeros_like(xline)
-                for i, pref in enumerate(order):
-                    comp = comps[i]
+                for index, prefix in enumerate(order):
+                    component = components[index]
                     kwargs = {}
-                    for pname in groups[pref].keys():
-                        vn = f"{pref}_{pname}"
-                        if vn in subset:
-                            val = subset[vn].values[s]
-                            kwargs[pname] = float(val)
-                    y_total += comp.model_func(xline, **kwargs)
+                    for param_name in groups[prefix].keys():
+                        variable_name = f"{prefix}_{param_name}"
+                        if variable_name in subset:
+                            value = subset[variable_name].values[sample_index]
+                            kwargs[param_name] = float(value)
+                    y_total += component.model_func(xline, **kwargs)
                 y_samples.append(y_total)
             
             y_samples = np.array(y_samples)
@@ -265,7 +268,7 @@ class Plot:
             band = (xline, low, high)
 
         return cls.plot_model_components(
-            comps,
+            components,
             xline,
             ax=ax,
             sum_kwargs=sum_kwargs,
@@ -279,12 +282,12 @@ class Plot:
         result,
         data: "OCLMFit",
         *,
-        ax=None,
+        ax: Optional[plt.Axes] = None,
         x_col: str = "cycle",
         n_points: int = 500,
         plot_kwargs: Optional[dict] = None,
         extension_factor: float = 0.05
-    ):
+    ) -> plt.Axes:
         if ax is None:
             fig, ax = plt.subplots(figsize=(10.0, 5.4))
 
@@ -312,11 +315,11 @@ class Plot:
         model_components: list,
         xline: np.ndarray,
         *,
-        ax=None,
+        ax: Optional[plt.Axes] = None,
         sum_kwargs: Optional[dict] = None,
         comp_kwargs: Optional[dict] = None,
         uncertainty_band: Optional[tuple] = None
-    ):
+    ) -> plt.Axes:
 
         def _comp_name(comp):
             return getattr(comp, "name", comp.__class__.__name__.lower())
@@ -346,7 +349,8 @@ class Plot:
         if ax is None:
             fig, ax = plt.subplots(figsize=(10.0, 5.4))
 
-        sum_kwargs = dict(lw=2.6, alpha=0.95, label="Sum of selected components", color="red", zorder=3) | (sum_kwargs or {})
+        sum_color = (sum_kwargs or {}).get("color", "red")
+        sum_kwargs = dict(lw=2.6, alpha=0.95, label="Sum of selected components", color=sum_color, zorder=3) | (sum_kwargs or {})
         comp_kwargs = dict(lw=1.5, alpha=0.9, linestyle="--") | (comp_kwargs or {})
 
         comp_curves = []
@@ -357,11 +361,11 @@ class Plot:
 
         if uncertainty_band is not None:
             bx, blow, bhigh = uncertainty_band
-            ax.fill_between(bx, blow, bhigh, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=2)
+            ax.fill_between(bx, blow, bhigh, color=sum_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=2)
 
         ax.plot(xline, y_sum, **sum_kwargs)
-        for comp, y_comp in comp_curves:
-            ax.plot(xline, y_comp, label=_comp_name(comp), **comp_kwargs)
+        for component, y_comp in comp_curves:
+            ax.plot(xline, y_comp, label=_comp_name(component), **comp_kwargs)
         
         return ax
 
@@ -371,16 +375,16 @@ class Plot:
         data: "OC",
         model: Union["InferenceData", "ModelResult", List["ModelComponent"]] = None,
         *,
-        ax=None,
-        ax_res=None,
-        residuals: bool = True,
+        ax: Optional[plt.Axes] = None,
+        res_ax: Optional[plt.Axes] = None,
+        res: bool = True,
         title: Optional[str] = None,
         x_col: str = "cycle",
         y_col: str = "oc",
         fig_size: tuple = (10, 7),
         plot_kwargs: Optional[dict] = None,
         extension_factor: float = 0.05
-    ):
+    ) -> Union[plt.Axes, Tuple[plt.Axes, plt.Axes]]:
         x = np.asarray(data.data[x_col].to_numpy(), dtype=float)
         y = np.asarray(data.data[y_col].to_numpy(), dtype=float)
         mask = np.isfinite(x) & np.isfinite(y)
@@ -395,24 +399,24 @@ class Plot:
         labels = data.data.get("labels", None)
         labels_clean = labels[mask] if labels is not None else None
 
-        main_ax = ax
-        resid_ax = ax_res
+        # ax_main = ax
+        # res_ax_internal = res_ax
         
-        if main_ax is None:
-            if model is not None and residuals:
-                fig, (main_ax, resid_ax) = plt.subplots(2, 1, figsize=fig_size, sharex=True, 
+        if ax is None:
+            if model is not None and res:
+                fig, (ax, res_ax) = plt.subplots(2, 1, figsize=fig_size, sharex=True, 
                                                      gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.04})
             else:
-                fig, main_ax = plt.subplots(figsize=(fig_size[0], fig_size[1]*0.75))
-                resid_ax = None
+                fig, ax = plt.subplots(figsize=(fig_size[0], fig_size[1]*0.75))
+                res_ax = None
         else:
-            if residuals and resid_ax is None:
-                residuals = False
+            if res and res_ax is None:
+                res = False
         
-        cls.plot_data(data, ax=main_ax, x_col=x_col, y_col=y_col, plot_kwargs=plot_kwargs)
+        cls.plot_data(data, ax=ax, x_col=x_col, y_col=y_col, plot_kwargs=plot_kwargs)
 
         def _plot_resid(ax_r, x_r, resid_r, yerr_r, labels_r):
-             scatter_kwargs = dict(fmt='o', markersize=3, alpha=0.8, elinewidth=0.8, capsize=1)
+             # scatter_kwargs = dict(fmt='o', markersize=3, alpha=0.8, elinewidth=0.8, capsize=1) # This was unused
              
              resid_kwargs = dict(fmt='o', markersize=3, alpha=0.8, elinewidth=0.8, capsize=1)
 
@@ -445,29 +449,30 @@ class Plot:
                  is_list = True
              
              if is_pymc:
-                 cls.plot_model_pymc(model, data, ax=main_ax, x_col=x_col, extension_factor=extension_factor)
-                 if residuals and resid_ax is not None:
+                 cls.plot_model_pymc(inference_data=model, data=data, ax=ax, x_col=x_col, plot_kwargs=plot_kwargs, extension_factor=extension_factor)
+                 if res and res_ax is not None:
                      y_model_post = model.posterior["y_model"]
                      yfit = y_model_post.median(dim=("chain", "draw")).values
                      if yfit.shape == y.shape:
                         resid = y - yfit
-                        _plot_resid(resid_ax, x, resid, yerr, labels)
-                        resid_ax.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
+                        _plot_resid(res_ax, x, resid, yerr, labels)
+                        res_ax.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
              elif is_lmfit:
-                 cls.plot_model_lmfit(model, data, ax=main_ax, x_col=x_col, extension_factor=extension_factor)
-                 if residuals and resid_ax is not None:
+                 cls.plot_model_lmfit(result=model, data=data, ax=ax, x_col=x_col, plot_kwargs=plot_kwargs, extension_factor=extension_factor)
+                 if res and res_ax is not None:
                      y_fit_at_x = model.eval(x=x_clean)
                      resid = y_clean - y_fit_at_x
-                     _plot_resid(resid_ax, x_clean, resid, yerr_clean, labels_clean)
-                     resid_ax.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
+                     _plot_resid(res_ax, x_clean, resid, yerr_clean, labels_clean)
+                     res_ax.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
              elif is_list:
                  xmin, xmax = (float(np.min(x)), float(np.max(x))) if x.size else (0.0, 1.0)
                  margin = (xmax - xmin) * extension_factor
                  xline = np.linspace(xmin - margin, xmax + margin, 800)
-                 cls.plot_model_components(model, xline=xline, ax=main_ax)
+                 cls.plot_model_components(model, xline=xline, ax=ax)
                  
-                 if residuals and resid_ax is not None:
+                 if res and res_ax is not None:
                      y_model_at_obs = np.zeros_like(x)
+                     # ... internal logic omitted for brevity, but I need to make sure I don't break it
                      def _sig_param_names(comp):
                         sig = inspect.signature(comp.model_func)
                         params = list(sig.parameters.values())[1:]
@@ -488,29 +493,27 @@ class Plot:
                          y_model_at_obs += comp.model_func(x, **kwargs)
                      
                      resid = y - y_model_at_obs
-                     _plot_resid(resid_ax, x, resid, yerr, labels)
-                     resid_ax.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
+                     _plot_resid(res_ax, x, resid, yerr, labels)
+                     res_ax.axhline(0, color="gray", lw=1.5, ls="--", alpha=0.6)
 
-        if resid_ax:
-            resid_ax.set_ylabel("Resid")
-            resid_ax.set_xlabel(x_col.capitalize())
-            resid_ax.grid(True, alpha=0.25)
-            main_ax.set_xlabel("")
+        if res_ax:
+            res_ax.set_ylabel("Resid")
+            res_ax.set_xlabel(x_col.capitalize())
+            res_ax.grid(True, alpha=0.25)
+            ax.set_xlabel("")
         
         if title:
-            main_ax.set_title(title)
+            ax.set_title(title)
             
-        main_ax.legend(loc="best")
-        if ax is None:
-            if resid_ax is None:
+        ax.legend(loc="best")
+        if ax is None: # If we created the figure internally
+            if res_ax is None: # If no residuals subplot was created
                 try:
                     fig.tight_layout()
                 except Exception:
                     pass
         
-        if resid_ax is not None:
-            return (main_ax, resid_ax)
-        return main_ax
+        return ax
 
     @staticmethod
     def _format_label(name: str, unit: Optional[str] = None) -> str:
@@ -521,6 +524,8 @@ class Plot:
             "e": r"$e$",
             "P": r"$P$",
             "T0": r"$T_0$",
+            "T": r"$T$",
+            "m": r"$m$",
             "a": r"$a$",
             "b": r"$b$",
             "q": r"$q$",
@@ -551,40 +556,61 @@ class Plot:
 
     @staticmethod
     def plot_corner(
-        idata, 
-        var_names=None, 
+        inference_data: az.InferenceData, 
+        var_names: Optional[List[str]] = None, 
         cornerstyle: Literal["corner", "arviz"] = "corner", 
         units: Optional[Dict[str, str]] = None,
         **kwargs
     ):
         
         if var_names is None:
-            candidates = [v for v in idata.posterior.data_vars
-                            if getattr(idata.posterior[v], "ndim", 0) == 2
-                            and v not in {"y_model", "y_model_dense", "y_obs"}]
+            variable_candidates = [var_name for var_name in inference_data.posterior.data_vars
+                            if getattr(inference_data.posterior[var_name], "ndim", 0) == 2
+                            and var_name not in {"y_model", "y_model_dense", "y_obs", "dense_x"}]
         else:
-            candidates = var_names
+            variable_candidates = var_names
 
-        final_vars = []
-        for v in candidates:
-            vals = idata.posterior[v].values
-            if vals.std() > 1e-25:
-                final_vars.append(v)
+        selected_variables = []
+        for var_name in variable_candidates:
+            values_array = inference_data.posterior[var_name].values
+            # Check if there's actual variation. ptp is peak-to-peak (max - min)
+            if np.ptp(values_array) > 1e-12: 
+                selected_variables.append(var_name)
         
-        if not final_vars:
-                raise ValueError("No suitable (non-fixed) parameters found for corner plot.")
+        if not selected_variables:
+             # If everything is fixed, we can't really do a corner plot, 
+             # but let's at least not crash or warn cryptically.
+             if variable_candidates:
+                  selected_variables = [variable_candidates[0]]
+             else:
+                  raise ValueError("No suitable parameters found for corner plot.")
         
-
-
         if cornerstyle == "corner":
             if corner is None:
                 raise ImportError("Corner plot requires 'corner' library. Please install it with `pip install corner`.")
 
+            extracted_samples = az.extract(inference_data, var_names=selected_variables)
+            samples = np.vstack([extracted_samples[var_name].values for var_name in selected_variables]).T
 
-            subset = az.extract(idata, var_names=final_vars)
-            samples = np.vstack([subset[v].values for v in final_vars]).T
-            
-            plot_labels = [Plot._format_label(v, (units or {}).get(v)) for v in final_vars]
+            # Map the 'range' list if its length doesn't match selected_variables
+            if "range" in kwargs and isinstance(kwargs["range"], (list, np.ndarray)):
+                range_list = list(kwargs["range"])
+                if len(range_list) != len(selected_variables):
+                    all_variables = list(inference_data.posterior.data_vars)
+                    if len(range_list) == len(all_variables):
+                        indices = [all_variables.index(v) for v in selected_variables]
+                        kwargs["range"] = [range_list[idx] for idx in indices]
+                    elif len(range_list) == len(variable_candidates):
+                        indices = [variable_candidates.index(v) for v in selected_variables]
+                        kwargs["range"] = [range_list[idx] for idx in indices]
+                    elif len(set(range_list)) == 1:
+                        # If all values are the same, corner accepts a single float
+                        kwargs["range"] = range_list[0]
+
+            # Calculate medians for truth lines
+            medians = [float(inference_data.posterior[var_name].median(dim=("chain", "draw"))) for var_name in selected_variables]
+
+            plot_labels = [Plot._format_label(var_name, (units or {}).get(var_name)) for var_name in selected_variables]
 
             if "quantiles" not in kwargs:
                 kwargs["quantiles"] = [0.16, 0.5, 0.84]
@@ -593,8 +619,13 @@ class Plot:
             if "title_fmt" not in kwargs:
                 kwargs["title_fmt"] = ".4f"
             
-            fig = corner.corner(samples, labels=plot_labels, **kwargs)
-            return fig
+            # Add truths if not already provided
+            if "truths" not in kwargs:
+                kwargs["truths"] = medians
+                kwargs.setdefault("truth_color", "red")
+            
+            figure = corner.corner(samples, labels=plot_labels, **kwargs)
+            return figure
             
         elif cornerstyle == "arviz":
             if "marginals" not in kwargs:
@@ -603,28 +634,32 @@ class Plot:
                 kwargs["kind"] = "kde"
             
             with az.rc_context({"plot.max_subplots": 200}):
-                return az.plot_pair(idata, var_names=final_vars, **kwargs)
+                return az.plot_pair(inference_data, var_names=selected_variables, **kwargs)
         else:
             raise ValueError(f"Unknown cornerstyle: {cornerstyle}. Use 'corner' or 'arviz'.")
 
     @staticmethod
-    def plot_trace(idata, var_names=None, **kwargs):
+    def plot_trace(inference_data, var_names=None, **kwargs):
         
         if var_names is None:
-             candidates = [v for v in idata.posterior.data_vars if v not in {"y_model", "y_model_dense", "y_obs"}]
+             # Only take variables with 2 dimensions (chain, draw) - these are usually parameters
+             variable_candidates = [var_name for var_name in inference_data.posterior.data_vars 
+                           if var_name not in {"y_model", "y_model_dense", "y_obs", "dense_x"}
+                           and getattr(inference_data.posterior[var_name], "ndim", 0) == 2]
         else:
-             candidates = var_names
+             variable_candidates = var_names
 
-        final_vars = []
-        for v in candidates:
-            vals = idata.posterior[v].values
-            if vals.std() > 1e-10:
-                final_vars.append(v)
+        selected_variables = []
+        for var_name in variable_candidates:
+            values_array = inference_data.posterior[var_name].values
+            # Exclude variables with near-zero variance (e.g. fixed parameters)
+            if values_array.std() > 1e-11:
+                selected_variables.append(var_name)
         
-        if not final_vars:
-             final_vars = candidates
+        if not selected_variables:
+             selected_variables = variable_candidates
 
-        axes = az.plot_trace(idata, var_names=final_vars, **kwargs)
+        axes = az.plot_trace(inference_data, var_names=selected_variables, **kwargs)
         
         try:
             fig = axes.flatten()[0].figure

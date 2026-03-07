@@ -16,23 +16,29 @@ from .oc import OC
 from .oc_lmfit import OCLMFit
 from .oc_pymc import OCPyMC
 
-
 class Data(DataModel):
     def __init__(
-            self, minimum_time: List,
+            self,
+            minimum_time: List,
             minimum_time_error: Optional[List] = None,
             weights: Optional[List] = None,
             minimum_type: Optional[BinarySeq] = None,
             labels: Optional[List] = None,
     ) -> None:
+        if minimum_time is None:
+             raise ValueError("`minimum_time` is required and cannot be None.")
+
         fixed_minimum_time_error = Fixer.length_fixer(minimum_time_error, minimum_time)
         fixed_weights = Fixer.length_fixer(weights, minimum_time)
         fixed_minimum_type = Fixer.length_fixer(minimum_type, minimum_time)
         fixed_labels_to = Fixer.length_fixer(labels, minimum_time)
 
+        # Convert to list if it's a scalar/None to avoid pandas scalar error
+        minimum_time_sequence = minimum_time if hasattr(minimum_time, "__len__") else [minimum_time]
+
         self.data = pd.DataFrame(
             {
-                "minimum_time": minimum_time,
+                "minimum_time": minimum_time_sequence,
                 "minimum_time_error": fixed_minimum_time_error,
                 "weights": fixed_weights,
                 "minimum_type": fixed_minimum_type,
@@ -92,6 +98,11 @@ class Data(DataModel):
             else:
                 rename_map = columns
             df = df.rename(columns=rename_map)
+
+        if "minimum_time" not in df.columns:
+            available = list(df.columns)
+            raise ValueError(f"Could not find 'minimum_time' in file columns. Available columns: {available}. "
+                             f"Please check your 'columns' mapping.")
 
         kwargs = {c: (df[c] if c in df.columns else None) for c in expected}
 
@@ -339,10 +350,10 @@ class Data(DataModel):
             oc=oc,
         )
 
-        key = str(model_type).strip().lower()
-        if key in {"lmfit", "lmfit_model"}:
+        targets = str(model_type).strip().lower()
+        if targets in {"lmfit", "lmfit_model"}:
             Target = OCLMFit
-        elif key in {"pymc", "pymc_model"}:
+        elif targets in {"pymc", "pymc_model"}:
             Target = OCPyMC
         else:
             Target = OC
