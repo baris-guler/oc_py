@@ -52,7 +52,7 @@ class TestVisualization(unittest.TestCase):
         mock_ax = MagicMock()
         mock_subplots.return_value = (mock_fig, mock_ax)
         
-        Plot.plot(self.oc_obj, residuals=False)
+        Plot.plot(self.oc_obj, res=False)
         
         mock_ax.errorbar.assert_called()
 
@@ -65,7 +65,7 @@ class TestVisualization(unittest.TestCase):
         mock_subplots.return_value = (mock_fig, (mock_main_ax, mock_resid_ax))
         
         mock_subplots.return_value = (mock_fig, mock_main_ax)
-        Plot.plot(self.oc_obj, residuals=True)
+        Plot.plot(self.oc_obj, res=True)
         mock_main_ax.errorbar.assert_called()
 
     @patch("matplotlib.pyplot.subplots")
@@ -78,7 +78,7 @@ class TestVisualization(unittest.TestCase):
         
         model = [] 
         
-        Plot.plot(self.oc_obj, model=model, residuals=True)
+        Plot.plot(self.oc_obj, model=model, res=True)
         
         mock_plot_comps.assert_called()
         self.assertTrue(mock_main_ax.errorbar.call_count > 0)
