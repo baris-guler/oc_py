@@ -12,9 +12,6 @@ except ImportError:
     HAS_PYTENSOR = False
 
 
-# ---------------------------------------------------------------------------
-# Sabit yardımcı: birim → ışık hızı (AU / birim_zaman)
-# ---------------------------------------------------------------------------
 _C_LIGHT: Dict[str, float] = {
     "day": 173.1446,
     "d":   173.1446,
@@ -25,7 +22,6 @@ _C_LIGHT: Dict[str, float] = {
 }
 
 def _c_for_time_unit(time_unit: str) -> float:
-    """Verilen zaman birimine karşılık gelen ışık hızını (AU/birim) döndürür."""
     key = time_unit.strip().lower()
     if key not in _C_LIGHT:
         raise ValueError(
@@ -36,10 +32,8 @@ def _c_for_time_unit(time_unit: str) -> float:
 
 
 class NewtonianModel(ModelComponent):
-    """
-    Newtonian n-body model component using REBOUND for ETV modeling.
-    """
     name = "newtonian"
+    _expensive = True
 
     def __init__(
         self,
@@ -47,27 +41,21 @@ class NewtonianModel(ModelComponent):
         integrator: str = "ias15",
         dt: float = 0.01,
         integrator_params: Optional[Dict[str, Any]] = None,
-        # Düzeltme: tutarlı default — "day" hem burada hem _setup_rebound'da
         units: Optional[Dict[str, str]] = None,
-
         reference_time: float = 0.0,
         t_start: Optional[float] = None,
         t_end: Optional[float] = None,
         stop_at_exact_time: bool = True,
-        escape_radius: Optional[float] = 100000.0, # Prevent runaway integration
-        min_distance: Optional[float] = 0.0001,    # Prevent collision stalls
-
+        escape_radius: Optional[float] = 100000.0,
+        min_distance: Optional[float] = 0.0001,
         precision_integration_steps: int = 0,
         integration_grid: Optional[Union[np.ndarray, List[float]]] = None,
-
         central_mass: NumberOrParam = 1.0,
         bodies: Optional[List[Dict[str, Any]]] = None,
         orbit_type: str = "heliocentric",
         orbit_output_type: str = "heliocentric",
-
         T0_ref: float = 0.0,
         P_ref: float = 1.0,
-
         compute_xyz: bool = True,
         compute_orbital: bool = True,
         name: Optional[str] = None,
@@ -79,15 +67,12 @@ class NewtonianModel(ModelComponent):
         self.dt = dt
         self.integrator_params = integrator_params or {}
 
-        # Tek bir default sözlük — "t": "day" her yerde kullanılır
         _default_units: Dict[str, str] = {"m": "msun", "t": "day", "l": "au"}
         if units:
             self.units = {**_default_units, **units}
         else:
             self.units = _default_units.copy()
 
-        # Işık hızı sabitini __init__'de bir kez hesapla; böylece
-        # _setup_rebound ve _calculate_etv her zaman aynı değeri kullanır.
         self._c_light: float = _c_for_time_unit(self.units["t"])
 
         self.reference_time = reference_time
@@ -136,15 +121,11 @@ class NewtonianModel(ModelComponent):
 
                     self.params[f"{prefix}{element}"] = p
 
-    # ------------------------------------------------------------------
-    # REBOUND simülasyonu kurulumu
-    # ------------------------------------------------------------------
     def _setup_rebound(self, params_dict: Dict[str, float]) -> rebound.Simulation:
         sim = rebound.Simulation()
         sim.integrator = self.integrator
         sim.dt = self.dt
 
-        # Düzeltme: fallback olarak self.units kullanılır — "yr" hard-code yok
         l_unit = self.units.get("l", "au")
         t_unit = self.units.get("t", "day")
         m_unit = self.units.get("m", "msun")
@@ -169,8 +150,6 @@ class NewtonianModel(ModelComponent):
 
             orb_params: Dict[str, Any] = {}
 
-            # inc: parametrik — bodies dict'te veya params'da varsa onu kullan,
-            # yoksa varsayılan 90°
             inc_key = f"{prefix}inc"
             if inc_key in params_dict:
                 orb_params["inc"] = np.deg2rad(params_dict[inc_key])
@@ -189,7 +168,6 @@ class NewtonianModel(ModelComponent):
                     continue
 
                 if val is not None and np.isfinite(val):
-                    # Rebound crashes if e >= 1.0 for closed orbits
                     if element == "e":
                         val = min(max(val, 0.0), 0.99999)
 
@@ -218,23 +196,22 @@ class NewtonianModel(ModelComponent):
         sim.move_to_com()
         return sim
 
-    # ------------------------------------------------------------------
-    # N-cisim entegrasyonu
-    # ------------------------------------------------------------------
     def integrate(
         self,
         times: np.ndarray,
         params_dict: Optional[Dict[str, float]] = None,
+        *,
+        compute_orbital: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        """Tam entegrasyonu çalıştırır ve istenen çıktıları döndürür."""
         if params_dict is None:
             params_dict = {k: p.value for k, p in self.params.items()}
 
-        # t_start / t_end sınırlaması
         if self.t_start is not None or self.t_end is not None:
             t_lo = self.t_start if self.t_start is not None else -np.inf
             t_hi = self.t_end if self.t_end is not None else np.inf
             times = times[(times >= t_lo) & (times <= t_hi)]
+
+        _compute_orbital = compute_orbital if compute_orbital is not None else self.compute_orbital
 
         sim = self._setup_rebound(params_dict)
         num_bodies = sim.N
@@ -248,7 +225,7 @@ class NewtonianModel(ModelComponent):
             ),
             "E": (
                 np.full((num_times, num_bodies - 1, 7), np.nan)
-                if self.compute_orbital
+                if _compute_orbital
                 else None
             ),
             "F": True,
@@ -274,7 +251,7 @@ class NewtonianModel(ModelComponent):
                         p = sim.particles[j]
                         outputs["D"][orig_i, j] = [p.x, p.y, p.z]
 
-                if self.compute_orbital:
+                if _compute_orbital:
                     jacobi = self.orbit_output_type == "jacobi"
                     orbits = (
                         sim.orbits(jacobi=True)
@@ -310,69 +287,55 @@ class NewtonianModel(ModelComponent):
 
         return outputs
 
-    # ------------------------------------------------------------------
-    # ETV hesabı (çekirdek)
-    # ------------------------------------------------------------------
     def _calculate_etv(
         self, x: np.ndarray, params_float: Dict[str, float]
     ) -> np.ndarray:
-        """
-        REBOUND kullanarak ETV (T_obs - T_calc) hesaplar.
-        Römer gecikmesi için self._c_light kullanılır — __init__'de
-        bir kez hesaplanmış, tutarsızlık riski sıfır.
-        """
-        times = x * self.P_ref
+        for v in params_float.values():
+            if not np.isfinite(v):
+                return np.full_like(x, np.nan, dtype=float)
 
-        # PyMC fit işlemleri ETV'yi on binlerce kez çağırır. 
-        # Ciddi performans artışı için yörünge çıktıları kapatılır.
-        orig_compute_orbital = self.compute_orbital
-        self.compute_orbital = False
+        times = x * self.P_ref
 
         try:
             if (
                 self.integration_grid is not None
                 and len(self.integration_grid) > 0
             ):
-                res = self.integrate(self.integration_grid, params_float)
+                res = self.integrate(self.integration_grid, params_float, compute_orbital=False)
                 if not res["F"] or res["D"] is None:
-                    return np.full_like(x, np.nan)
+                    return np.full_like(x, np.nan, dtype=float)
                 grid_z = res["D"][:, 0, 2]
-                if np.isnan(grid_z).any(): return np.full_like(x, np.nan)
+                if np.isnan(grid_z).any():
+                    return np.full_like(x, np.nan, dtype=float)
                 z_primary = np.interp(times, self.integration_grid, grid_z)
 
             elif self.precision_integration_steps > 0:
                 if len(times) == 0:
-                    return np.zeros_like(x)
+                    return np.zeros_like(x, dtype=float)
                 grid_times = np.linspace(
                     np.min(times), np.max(times), self.precision_integration_steps
                 )
-                res = self.integrate(grid_times, params_float)
+                res = self.integrate(grid_times, params_float, compute_orbital=False)
                 if not res["F"] or res["D"] is None:
-                    return np.full_like(x, np.nan)
+                    return np.full_like(x, np.nan, dtype=float)
                 grid_z = res["D"][:, 0, 2]
-                if np.isnan(grid_z).any(): return np.full_like(x, np.nan)
+                if np.isnan(grid_z).any():
+                    return np.full_like(x, np.nan, dtype=float)
                 z_primary = np.interp(times, grid_times, grid_z)
 
             else:
-                res = self.integrate(times, params_float)
+                res = self.integrate(times, params_float, compute_orbital=False)
                 if not res["F"] or res["D"] is None:
-                    return np.full_like(x, np.nan)
+                    return np.full_like(x, np.nan, dtype=float)
                 z_primary = res["D"][:, 0, 2]
-                if np.isnan(z_primary).any(): return np.full_like(x, np.nan)
+                if np.isnan(z_primary).any():
+                    return np.full_like(x, np.nan, dtype=float)
 
-            # Düzeltme: self._c_light — tek kaynak, fallback yok
             return -z_primary / self._c_light
-        finally:
-            self.compute_orbital = orig_compute_orbital
+        except Exception:
+            return np.full_like(x, np.nan, dtype=float)
 
-    # ------------------------------------------------------------------
-    # lmfit / PyMC arayüzü
-    # ------------------------------------------------------------------
     def model_func(self, x: np.ndarray, **kwargs) -> np.ndarray:
-        """
-        ocpy fitting için fonksiyon.
-        x: cycle (E) veya zaman (BJD).
-        """
         is_symbolic = False
         if HAS_PYTENSOR:
             for v in kwargs.values():
@@ -403,17 +366,51 @@ class NewtonianModel(ModelComponent):
         return self._calculate_etv(x, params_float)
 
 
-# ---------------------------------------------------------------------------
-# PyTensor Op (sembolik değişkenler için)
-# ---------------------------------------------------------------------------
 if HAS_PYTENSOR:
 
+    class _NewtonianGradOp(pt.Op):
+        EPS = 1e-7
+
+        def __init__(self, model: NewtonianModel, param_keys: List[str]) -> None:
+            self.model = model
+            self.param_keys = param_keys
+            self.n_params = len(param_keys)
+
+        def make_node(self, x, gz, *args):
+            x = pt.as_tensor_variable(x)
+            gz = pt.as_tensor_variable(gz)
+            args = [pt.as_tensor_variable(a) for a in args]
+            output_types = [a.type.make_variable() for a in args]
+            return pytensor.graph.basic.Apply(
+                self, [x, gz] + list(args), output_types
+            )
+
+        def perform(self, node, inputs, outputs):
+            x = inputs[0]
+            gz = inputs[1]
+            param_vals = inputs[2:]
+
+            base_params = {
+                k: float(v) for k, v in zip(self.param_keys, param_vals)
+            }
+            f0 = self.model._calculate_etv(x, base_params)
+
+            for i, key in enumerate(self.param_keys):
+                perturbed = base_params.copy()
+                h = max(abs(base_params[key]) * self.EPS, self.EPS)
+                perturbed[key] += h
+                f1 = self.model._calculate_etv(x, perturbed)
+                df_dp = (f1 - f0) / h
+                outputs[i][0] = np.asarray(
+                    np.sum(gz * df_dp), dtype=node.outputs[i].dtype
+                )
+
     class NewtonianOp(pt.Op):
-        """PyTensor Op wrapper for NewtonianModel."""
 
         def __init__(self, model: NewtonianModel) -> None:
             self.model = model
             self.param_keys = sorted(model.params.keys())
+            self._grad_op = _NewtonianGradOp(model, self.param_keys)
 
         def make_node(self, x, *args):
             x = pt.as_tensor_variable(x)
@@ -430,3 +427,12 @@ if HAS_PYTENSOR:
             }
             result = self.model._calculate_etv(x, params_float)
             outputs[0][0] = np.asarray(result, dtype=node.outputs[0].dtype)
+
+        def grad(self, inputs, output_gradients):
+            gz = output_gradients[0]
+            x = inputs[0]
+            param_inputs = inputs[1:]
+            param_grads = self._grad_op(x, gz, *param_inputs)
+            if not isinstance(param_grads, (list, tuple)):
+                param_grads = [param_grads]
+            return [pytensor.gradient.DisconnectedType()()] + list(param_grads)

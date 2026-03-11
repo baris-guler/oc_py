@@ -1,13 +1,14 @@
 from __future__ import annotations
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
+import warnings
 
 import numpy as np
 import pymc as pm
 import arviz as az
 import pytensor.tensor as pt
 
-
 from .oc import OC, Linear, Quadratic, Keplerian, Sinusoidal, Parameter, ModelComponent
+from .visualization import Plot
 
 
 class OCPyMC(OC):
@@ -56,20 +57,18 @@ class OCPyMC(OC):
                 return pm.Deterministic(name, pt.as_tensor_variable(val))
 
             if sd is None or sd <= 0:
-                sd = 1.0 
+                sd = max(abs(val) * 0.1, 1e-6)
 
             if (lo is not None and np.isfinite(lo)) or (hi is not None and np.isfinite(hi)):
                 lower = float(lo) if lo is not None else None
                 upper = float(hi) if hi is not None else None
                 
-                # Slicer overflows if initval is EXACTLY ON the boundary. Push it slightly inside.
                 safe_val = val
                 eps = 1e-5
                 if lower is not None and safe_val <= lower:
                     safe_val = lower + eps
                 if upper is not None and safe_val >= upper:
                     safe_val = upper - eps
-                # Ensure we didn't overshoot if bounds are tight
                 if lower is not None and safe_val < lower: safe_val = lower
                 if upper is not None and safe_val > upper: safe_val = upper
                     
@@ -106,41 +105,40 @@ class OCPyMC(OC):
             pm.Deterministic("y_model", mu_total)
             pm.Normal("y_obs", mu=mu_total, sigma=sigma_i, observed=y)
 
-            # Add a dense grid for smooth plotting
-            xmin, xmax = np.min(x), np.max(x)
-            margin = (xmax - xmin) * 0.05
-            dense_x_vals = np.linspace(xmin - margin, xmax + margin, 500)
-            
-            mus_dense = []
-            for comp, pref in zip(model_components, prefixes):
-                mus_dense.append(comp.model_func(dense_x_vals, **comp_rvs[pref]))
-            
-            mu_total_dense = mus_dense[0] if len(mus_dense) == 1 else sum(mus_dense)
-            pm.Deterministic("y_model_dense", mu_total_dense)
-            # Store dense_x too so visualization knows where to plot
-            pm.Deterministic("dense_x", pt.as_tensor_variable(dense_x_vals))
+            has_expensive = any(getattr(c, "_expensive", False) for c in model_components)
+
+            if not has_expensive:
+                xmin, xmax = np.min(x), np.max(x)
+                margin = (xmax - xmin) * 0.05
+                dense_x_vals = np.linspace(xmin - margin, xmax + margin, 500)
+
+                mus_dense = []
+                for comp, pref in zip(model_components, prefixes):
+                    mus_dense.append(comp.model_func(dense_x_vals, **comp_rvs[pref]))
+
+                mu_total_dense = mus_dense[0] if len(mus_dense) == 1 else sum(mus_dense)
+                pm.Deterministic("y_model_dense", mu_total_dense)
+                pm.Deterministic("dense_x", pt.as_tensor_variable(dense_x_vals))
 
             if return_model:
                 return model
 
             # Pack sample arguments
             sample_kwargs = kwargs.copy()
-            
+
             if cores is not None:
                 sample_kwargs["cores"] = min(cores, chains)
             elif "cores" not in sample_kwargs:
                 sample_kwargs["cores"] = chains
-                
+
             if target_accept is not None:
                 sample_kwargs["target_accept"] = target_accept
-                
+
+            if has_expensive and "step" not in sample_kwargs:
+                sample_kwargs["step"] = pm.DEMetropolisZ()
+
             if "step" in sample_kwargs and callable(sample_kwargs["step"]) and not isinstance(sample_kwargs["step"], pm.step_methods.arraystep.ArrayStep):
-                # Instantiate the step method class within the context
                 sample_kwargs["step"] = sample_kwargs["step"]()
-            
-            # init is only for NUTS, but PyMC usually handles it if NUTS is auto-selected.
-            # However, if target_accept is None and we don't specify init, PyMC might behave better 
-            # when it defaults to other samplers.
 
             inference_data = pm.sample(
                 draws=draws, 
@@ -161,14 +159,6 @@ class OCPyMC(OC):
         filter_outliers: bool = True, 
         iqr_multiplier: float = 4.0
     ) -> az.InferenceData:
-        """
-        Cleans the InferenceData object by dropping the furthest chains and filtering out extreme outliers.
-        This modifies the dataset shape (flattening chains to 1 if filtering outliers).
-        """
-        import copy
-        import xarray as xr
-        import numpy as np
-        
         posterior_data = inference_data.posterior
         chain_coords = posterior_data.coords["chain"].values
         chains_to_keep = list(chain_coords)
@@ -236,7 +226,6 @@ class OCPyMC(OC):
                         # Re-add chain dimension
                         group_dataset = filtered.expand_dims({"chain": [0]}).transpose("chain", "draw", ...)
                     except Exception as error_msg:
-                        import warnings
                         warnings.warn(f"clean() encountered an issue on {group_name}: {error_msg}")
                         
             new_groups[group_name] = group_dataset
@@ -292,9 +281,7 @@ class OCPyMC(OC):
         return self.fit([quad, lin], cores=cores, **kwargs)
 
     def corner(self, inference_data: az.InferenceData, cornerstyle: Literal["corner", "arviz"] = "corner", units: Optional[Dict[str, str]] = None, **kwargs):
-        from .visualization import Plot
         return Plot.plot_corner(inference_data, cornerstyle=cornerstyle, units=units, **kwargs)
 
     def trace(self, inference_data: az.InferenceData, **kwargs):
-        from .visualization import Plot
         return Plot.plot_trace(inference_data, **kwargs)

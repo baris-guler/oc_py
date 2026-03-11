@@ -29,7 +29,7 @@ class Plot:
         
         # ax = ax # Not needed anymore
         
-        plot_kwargs = dict(fmt="o", markersize=4.5, color="tab:blue", alpha=0.8, capsize=2, label="Data") | (plot_kwargs or {})
+        plot_kwargs = dict(fmt="o", markersize=4.5, color="tab:blue", alpha=0.8, capsize=2, label="Data", zorder=1) | (plot_kwargs or {})
 
         x_values = np.asarray(data.data[x_col].to_numpy(), dtype=float)
         y_values = np.asarray(data.data[y_col].to_numpy(), dtype=float)
@@ -95,7 +95,7 @@ class Plot:
         comp_kwargs: Optional[dict] = None,
         plot_kwargs: Optional[dict] = None,
         plot_band: bool = True,
-        extension_factor: float = 0.05
+        extension_factor: float = 0.1
     ) -> plt.Axes:
         if ax is None:
             ax = plt.gca()
@@ -191,12 +191,12 @@ class Plot:
                     fig, ax = plt.subplots(figsize=(10.0, 5.4))
                 
                 fit_color = (plot_kwargs or {}).get("color", "red")
-                ax.plot(x_dense_vals, y_fit, color=fit_color, lw=2.6, label="Fit (Median)")
-                
+                ax.plot(x_dense_vals, y_fit, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
+
                 if plot_band:
                     low = y_dense_post.quantile(0.16, dim=("chain", "draw")).values
                     high = y_dense_post.quantile(0.84, dim=("chain", "draw")).values
-                    ax.fill_between(x_dense_vals, low, high, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                    ax.fill_between(x_dense_vals, low, high, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
                 return ax
 
         # 2. Secondary Fallback: Interpolate y_model at observation points
@@ -224,23 +224,23 @@ class Plot:
                 ys_clean = df_average['y'].values
                 
                 fit_color = (plot_kwargs or {}).get("color", "red")
+                x_range = xs_clean.max() - xs_clean.min()
+                ext_margin = x_range * extension_factor
                 try:
                     from scipy.interpolate import make_interp_spline
-                    # Create a smooth grid for plotting (longer than the data range if requested)
-                    x_smooth = np.linspace(xs_clean.min(), xs_clean.max(), 1000)
+                    x_smooth = np.linspace(xs_clean.min() - ext_margin, xs_clean.max() + ext_margin, 1000)
                     spl = make_interp_spline(xs_clean, ys_clean, k=3)
                     y_smooth = spl(x_smooth)
-                    ax.plot(x_smooth, y_smooth, color=fit_color, lw=2.6, label="Fit (Median)")
-                    
+                    ax.plot(x_smooth, y_smooth, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
+
                     if plot_band:
                         spl_low = make_interp_spline(xs_clean, df_average['low'].values, k=3)
                         spl_high = make_interp_spline(xs_clean, df_average['high'].values, k=3)
-                        ax.fill_between(x_smooth, spl_low(x_smooth), spl_high(x_smooth), color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                        ax.fill_between(x_smooth, spl_low(x_smooth), spl_high(x_smooth), color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
                 except Exception:
-                    # Fallback to simple line if scipy.interpolate fails
-                    ax.plot(xs_clean, ys_clean, color=fit_color, lw=2.6, label="Fit (Median)")
+                    ax.plot(xs_clean, ys_clean, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
                     if plot_band:
-                        ax.fill_between(xs_clean, df_average['low'].values, df_average['high'].values, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)")
+                        ax.fill_between(xs_clean, df_average['low'].values, df_average['high'].values, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
                 
                 return ax
 
@@ -286,7 +286,7 @@ class Plot:
         x_col: str = "cycle",
         n_points: int = 500,
         plot_kwargs: Optional[dict] = None,
-        extension_factor: float = 0.05
+        extension_factor: float = 0.1
     ) -> plt.Axes:
         if ax is None:
             fig, ax = plt.subplots(figsize=(10.0, 5.4))
@@ -297,11 +297,11 @@ class Plot:
         x_dense = np.linspace(xmin - margin, xmax + margin, n_points)
         y_fit_dense = result.eval(x=x_dense)
 
-        plot_kwargs = dict(color="red", label="Fit", zorder=3) | (plot_kwargs or {})
-        
+        plot_kwargs = dict(color="red", label="Fit", zorder=5) | (plot_kwargs or {})
+
         try:
             dely = result.eval_uncertainty(x=x_dense, sigma=1)
-            ax.fill_between(x_dense, y_fit_dense - dely, y_fit_dense + dely, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=2)
+            ax.fill_between(x_dense, y_fit_dense - dely, y_fit_dense + dely, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
         except Exception:
             pass
 
@@ -350,7 +350,7 @@ class Plot:
             fig, ax = plt.subplots(figsize=(10.0, 5.4))
 
         sum_color = (sum_kwargs or {}).get("color", "red")
-        sum_kwargs = dict(lw=2.6, alpha=0.95, label="Sum of selected components", color=sum_color, zorder=3) | (sum_kwargs or {})
+        sum_kwargs = dict(lw=2.6, alpha=0.95, label="Sum of selected components", color=sum_color, zorder=5) | (sum_kwargs or {})
         comp_kwargs = dict(lw=1.5, alpha=0.9, linestyle="--") | (comp_kwargs or {})
 
         comp_curves = []
@@ -361,7 +361,7 @@ class Plot:
 
         if uncertainty_band is not None:
             bx, blow, bhigh = uncertainty_band
-            ax.fill_between(bx, blow, bhigh, color=sum_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=2)
+            ax.fill_between(bx, blow, bhigh, color=sum_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
 
         ax.plot(xline, y_sum, **sum_kwargs)
         for component, y_comp in comp_curves:
@@ -383,7 +383,7 @@ class Plot:
         y_col: str = "oc",
         fig_size: tuple = (10, 7),
         plot_kwargs: Optional[dict] = None,
-        extension_factor: float = 0.05
+        extension_factor: float = 0.1
     ) -> Union[plt.Axes, Tuple[plt.Axes, plt.Axes]]:
         x = np.asarray(data.data[x_col].to_numpy(), dtype=float)
         y = np.asarray(data.data[y_col].to_numpy(), dtype=float)

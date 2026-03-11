@@ -1,20 +1,24 @@
-from typing import Union, Optional, Dict, Self, Callable, List, Literal
-from abc import ABC, abstractmethod
+from typing import Union, Optional, Dict, Self, Callable, List
 from numpy.typing import ArrayLike
 from lmfit.model import ModelResult
 from pathlib import Path
+from copy import deepcopy
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from astropy import constants as const
-import math
 
 from ocpy.custom_types import ArrayReducer, NumberOrParam
 from ocpy.utils import Fixer
 from ocpy.model_oc import OCModel, ModelComponentModel, ParameterModel
 from dataclasses import dataclass
-import pymc as pm
-import pytensor.tensor as pt
+try:
+    import pymc as pm
+    import pytensor.tensor as pt
+    _HAS_PYMC = True
+except ImportError:
+    pm = None
+    pt = None
+    _HAS_PYMC = False
 
 @dataclass
 class Parameter(ParameterModel):
@@ -33,7 +37,7 @@ class ModelComponent(ModelComponentModel):
 
     def set_math(self, mathmod):
         self.math_class = mathmod
-        if pm is not None and mathmod is getattr(pm, "math", None):
+        if _HAS_PYMC and mathmod is getattr(pm, "math", None):
             self._atan2 = getattr(pm.math, "arctan2", getattr(pt, "arctan2", np.arctan2))
         else:
             self._atan2 = getattr(mathmod, "arctan2", getattr(mathmod, "atan2", np.arctan2))
@@ -52,10 +56,6 @@ class ModelComponent(ModelComponentModel):
         return self
 
     def update_from_idata(self, inference_data, group="posterior", stat="median"):
-        """
-        Update parameter values from PyMC InferenceData.
-        """
-        import arviz as az
         prefix = getattr(self, "name", "")
         
         # Get the variables for this component
@@ -331,33 +331,6 @@ class OC(OCModel):
         return edges
 
     @staticmethod
-    def _bin_data(
-        df: pd.DataFrame,
-        edges: np.ndarray,
-        xcol: str,
-        ycol: str,
-        yerrcol: Optional[str] = None
-    ) -> pd.DataFrame:
-        df_sorted = df.sort_values(by=xcol)
-        
-        # This part of the original _equal_bins was removed, but the instruction implies it should be replaced.
-        # The instruction's `_equal_bins` returns `edges`, not `bins`.
-        # The instruction's `_smart_bins` is not provided in full, so I'll keep the original `_smart_bins` logic
-        # but replace `df` with `df`.
-        # The `bin` method will need to be adjusted to use `edges` instead of `bins`.
-        
-        # The instruction provided a snippet for `_equal_bins` that returns `edges`.
-        # The original `_equal_bins` returned `bins` (start, end pairs).
-        # The `bin` method uses `bins` (start, end pairs).
-        # This means the instruction's `_equal_bins` is incompatible with the existing `bin` method.
-        # I will apply the `_equal_bins` change as given, and then adapt the `bin` method to use `edges`.
-        # The `_bin_data` method is new and needs to be inserted.
-
-        # The instruction's `_bin_data` snippet is incomplete. I will insert the method signature and leave its body empty for now,
-        # as the full implementation is not provided.
-        pass # Placeholder for _bin_data implementation
-
-    @staticmethod
     def _smart_bins(
         df: pd.DataFrame,
         xcol: str,
@@ -508,15 +481,11 @@ class OC(OCModel):
         )
 
     def merge(self, oc: Self) -> Self:
-        from copy import deepcopy
         new_oc = deepcopy(self)
         new_oc.data = pd.concat([self.data, oc.data], ignore_index=True, sort=False)
         return new_oc
     
     def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit") -> Self:
-        import numpy as np
-        import pandas as pd
-
         df = self.data.copy()
         if "minimum_time" not in df.columns:
             raise ValueError("`minimum_time` column is required to compute O–C.")
@@ -650,7 +619,7 @@ class OC(OCModel):
         y_col: str = "oc",
         fig_size: tuple = (10, 7),
         plot_kwargs: Optional[dict] = None,
-        extension_factor: float = 0.05
+        extension_factor: float = 0.1
     ):
         from .visualization import Plot
         return Plot.plot(
