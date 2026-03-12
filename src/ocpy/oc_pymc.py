@@ -150,6 +150,9 @@ class OCPyMC(OC):
                 **sample_kwargs
             )
 
+        inference_data.attrs["_model_components"] = model_components
+        inference_data.attrs["_model_prefixes"] = prefixes
+
         return inference_data
 
     def clean(
@@ -230,7 +233,11 @@ class OCPyMC(OC):
                         
             new_groups[group_name] = group_dataset
             
-        return az.InferenceData(**new_groups)
+        cleaned = az.InferenceData(**new_groups)
+        for attr_key in ("_model_components", "_model_prefixes"):
+            if attr_key in getattr(inference_data, "attrs", {}):
+                cleaned.attrs[attr_key] = inference_data.attrs[attr_key]
+        return cleaned
 
 
     def residue(self, inference_data: az.InferenceData, *, x_col: str = "cycle", y_col: str = "oc") -> "OCPyMC":

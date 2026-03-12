@@ -619,7 +619,8 @@ class OC(OCModel):
         y_col: str = "oc",
         fig_size: tuple = (10, 7),
         plot_kwargs: Optional[dict] = None,
-        extension_factor: float = 0.1
+        extension_factor: float = 0.05,
+        model_components: Optional[list] = None,
     ):
         from .visualization import Plot
         return Plot.plot(
@@ -633,7 +634,8 @@ class OC(OCModel):
             y_col=y_col,
             fig_size=fig_size,
             plot_kwargs=plot_kwargs,
-            extension_factor=extension_factor
+            extension_factor=extension_factor,
+            model_components=model_components,
         )
 
     

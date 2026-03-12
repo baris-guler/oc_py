@@ -95,7 +95,8 @@ class Plot:
         comp_kwargs: Optional[dict] = None,
         plot_kwargs: Optional[dict] = None,
         plot_band: bool = True,
-        extension_factor: float = 0.1
+        extension_factor: float = 0.1,
+        model_components: Optional[list] = None,
     ) -> plt.Axes:
         if ax is None:
             ax = plt.gca()
@@ -177,7 +178,6 @@ class Plot:
         xline = np.linspace(xmin - margin, xmax + margin, n_points)
 
         band = None
-        y_total_best = np.zeros_like(xline)
 
         # 1. Best Fallback: Use y_model_dense if it exists in inference_data
         if "y_model_dense" in inference_data.posterior and "dense_x" in inference_data.posterior:
@@ -192,7 +192,7 @@ class Plot:
                 
                 fit_color = (plot_kwargs or {}).get("color", "red")
                 ax.plot(x_dense_vals, y_fit, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
-
+                
                 if plot_band:
                     low = y_dense_post.quantile(0.16, dim=("chain", "draw")).values
                     high = y_dense_post.quantile(0.84, dim=("chain", "draw")).values
@@ -203,45 +203,111 @@ class Plot:
         if "y_model" in inference_data.posterior and len(x) == inference_data.posterior["y_model"].shape[-1]:
             y_model_post = inference_data.posterior["y_model"]
             y_total_obs = y_model_post.median(dim=("chain", "draw")).values
-            
+
             # If we reconstructed no components, we use y_model points as the fit line
             if not components:
                 if ax is None:
                     fig, ax = plt.subplots(figsize=(10.0, 5.4))
-                
+
                 # Handle duplicates and sort using pandas for robustness
                 import pandas as pd
                 df_temp = pd.DataFrame({'x': x, 'y': y_total_obs})
-                
+
                 # Check for uncertainty band data
                 if plot_band:
                     df_temp['low'] = y_model_post.quantile(0.16, dim=("chain", "draw")).values
                     df_temp['high'] = y_model_post.quantile(0.84, dim=("chain", "draw")).values
-                
+
                 # Group by x and take mean to handle multiple observations at the same cycle
                 df_average = df_temp.groupby('x').mean().sort_index()
                 xs_clean = df_average.index.values
                 ys_clean = df_average['y'].values
-                
+
                 fit_color = (plot_kwargs or {}).get("color", "red")
                 x_range = xs_clean.max() - xs_clean.min()
                 ext_margin = x_range * extension_factor
-                try:
-                    from scipy.interpolate import make_interp_spline
-                    x_smooth = np.linspace(xs_clean.min() - ext_margin, xs_clean.max() + ext_margin, 1000)
-                    spl = make_interp_spline(xs_clean, ys_clean, k=3)
-                    y_smooth = spl(x_smooth)
-                    ax.plot(x_smooth, y_smooth, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
 
-                    if plot_band:
-                        spl_low = make_interp_spline(xs_clean, df_average['low'].values, k=3)
-                        spl_high = make_interp_spline(xs_clean, df_average['high'].values, k=3)
-                        ax.fill_between(x_smooth, spl_low(x_smooth), spl_high(x_smooth), color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
-                except Exception:
-                    ax.plot(xs_clean, ys_clean, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
-                    if plot_band:
-                        ax.fill_between(xs_clean, df_average['low'].values, df_average['high'].values, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
-                
+                # Check if expensive model components are available for proper extension
+                _model_comps = model_components or getattr(inference_data, 'attrs', {}).get('_model_components', None)
+                _model_prefs = getattr(inference_data, 'attrs', {}).get('_model_prefixes', None)
+                has_expensive_models = (
+                    _model_comps is not None
+                    and any(getattr(c, '_expensive', False) for c in _model_comps)
+                )
+
+                if has_expensive_models and ext_margin > 0:
+                    # Use model_func with posterior medians to evaluate full extended range
+                    try:
+                        x_full = np.linspace(xs_clean.min() - ext_margin, xs_clean.max() + ext_margin, n_points)
+                        median_params = {}
+                        for var_name in inference_data.posterior.data_vars:
+                            vals = inference_data.posterior[var_name].values
+                            if vals.ndim == 2:  # (chain, draw) -> scalar param
+                                median_params[var_name] = float(np.median(vals))
+
+                        # Build prefixes if not stored: infer from posterior var names
+                        if _model_prefs is None:
+                            _model_prefs = []
+                            base_names = [getattr(c, 'name', c.__class__.__name__.lower()) for c in _model_comps]
+                            counts = {n: base_names.count(n) for n in base_names}
+                            seen = {n: 0 for n in base_names}
+                            for n in base_names:
+                                seen[n] += 1
+                                if counts[n] > 1:
+                                    _model_prefs.append(f"{n}{seen[n]}_")
+                                else:
+                                    _model_prefs.append(f"{n}_")
+
+                        y_full = np.zeros(len(x_full), dtype=float)
+                        for comp, pref in zip(_model_comps, _model_prefs):
+                            comp_params = {}
+                            for pname in getattr(comp, 'params', {}):
+                                full_name = pref + pname
+                                if full_name in median_params:
+                                    comp_params[pname] = median_params[full_name]
+                                else:
+                                    comp_params[pname] = float(comp.params[pname].value)
+                            y_full = y_full + np.asarray(comp.model_func(x_full, **comp_params), dtype=float)
+
+                        ax.plot(x_full, y_full, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
+                    except Exception:
+                        # Fall back to spline interpolation with flat extension
+                        from scipy.interpolate import make_interp_spline
+                        x_inner = np.linspace(xs_clean.min(), xs_clean.max(), 1000)
+                        spl = make_interp_spline(xs_clean, ys_clean, k=3)
+                        y_inner = spl(x_inner)
+                        x_left = np.linspace(xs_clean.min() - ext_margin, xs_clean.min(), 50, endpoint=False)
+                        x_right = np.linspace(xs_clean.max(), xs_clean.max() + ext_margin, 50)[1:]
+                        x_full = np.concatenate([x_left, x_inner, x_right])
+                        y_full = np.concatenate([np.full_like(x_left, y_inner[0]), y_inner, np.full_like(x_right, y_inner[-1])])
+                        ax.plot(x_full, y_full, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
+                else:
+                    try:
+                        from scipy.interpolate import make_interp_spline
+                        x_inner = np.linspace(xs_clean.min(), xs_clean.max(), 1000)
+                        spl = make_interp_spline(xs_clean, ys_clean, k=3)
+                        y_inner = spl(x_inner)
+
+                        x_left = np.linspace(xs_clean.min() - ext_margin, xs_clean.min(), 50, endpoint=False)
+                        x_right = np.linspace(xs_clean.max(), xs_clean.max() + ext_margin, 50)[1:]
+                        x_full = np.concatenate([x_left, x_inner, x_right])
+                        y_full = np.concatenate([np.full_like(x_left, y_inner[0]), y_inner, np.full_like(x_right, y_inner[-1])])
+
+                        ax.plot(x_full, y_full, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
+
+                        if plot_band:
+                            spl_low = make_interp_spline(xs_clean, df_average['low'].values, k=3)
+                            spl_high = make_interp_spline(xs_clean, df_average['high'].values, k=3)
+                            low_inner = spl_low(x_inner)
+                            high_inner = spl_high(x_inner)
+                            low_full = np.concatenate([np.full_like(x_left, low_inner[0]), low_inner, np.full_like(x_right, low_inner[-1])])
+                            high_full = np.concatenate([np.full_like(x_left, high_inner[0]), high_inner, np.full_like(x_right, high_inner[-1])])
+                            ax.fill_between(x_full, low_full, high_full, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
+                    except Exception:
+                        ax.plot(xs_clean, ys_clean, color=fit_color, lw=2.6, label="Fit (Median)", zorder=5)
+                        if plot_band:
+                            ax.fill_between(xs_clean, df_average['low'].values, df_average['high'].values, color=fit_color, alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
+
                 return ax
 
         if plot_band and components:
@@ -298,7 +364,7 @@ class Plot:
         y_fit_dense = result.eval(x=x_dense)
 
         plot_kwargs = dict(color="red", label="Fit", zorder=5) | (plot_kwargs or {})
-
+        
         try:
             dely = result.eval_uncertainty(x=x_dense, sigma=1)
             ax.fill_between(x_dense, y_fit_dense - dely, y_fit_dense + dely, color="red", alpha=0.3, linewidth=0, label=r"Uncertainty (1$\sigma$)", zorder=4)
@@ -383,7 +449,8 @@ class Plot:
         y_col: str = "oc",
         fig_size: tuple = (10, 7),
         plot_kwargs: Optional[dict] = None,
-        extension_factor: float = 0.1
+        extension_factor: float = 0.1,
+        model_components: Optional[list] = None,
     ) -> Union[plt.Axes, Tuple[plt.Axes, plt.Axes]]:
         x = np.asarray(data.data[x_col].to_numpy(), dtype=float)
         y = np.asarray(data.data[y_col].to_numpy(), dtype=float)
@@ -449,7 +516,7 @@ class Plot:
                  is_list = True
              
              if is_pymc:
-                 cls.plot_model_pymc(inference_data=model, data=data, ax=ax, x_col=x_col, plot_kwargs=plot_kwargs, extension_factor=extension_factor)
+                 cls.plot_model_pymc(inference_data=model, data=data, ax=ax, x_col=x_col, plot_kwargs=plot_kwargs, extension_factor=extension_factor, model_components=model_components)
                  if res and res_ax is not None:
                      y_model_post = model.posterior["y_model"]
                      yfit = y_model_post.median(dim=("chain", "draw")).values
