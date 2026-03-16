@@ -69,8 +69,6 @@ class OCPyMC(OC):
                     safe_val = lower + eps
                 if upper is not None and safe_val >= upper:
                     safe_val = upper - eps
-                if lower is not None and safe_val < lower: safe_val = lower
-                if upper is not None and safe_val > upper: safe_val = upper
                     
                 return pm.TruncatedNormal(name, mu=val, sigma=float(sd), lower=lower, upper=upper, initval=safe_val)
             

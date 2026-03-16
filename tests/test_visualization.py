@@ -1,122 +1,239 @@
 import unittest
-from unittest.mock import MagicMock, patch
+import matplotlib
+matplotlib.use("Agg")
+
 import numpy as np
+import matplotlib.pyplot as plt
+
 from ocpy.visualization import Plot
-from ocpy.oc import OC
+from ocpy.oc import OC, Linear, Quadratic, Sinusoidal, Keplerian, Parameter
+from ocpy.oc_lmfit import OCLMFit
+from ocpy.oc_pymc import OCPyMC
 
-class TestVisualization(unittest.TestCase):
+
+class TestPlotData(unittest.TestCase):
+    def tearDown(self):
+        plt.close("all")
+
+    def test_plot_data_with_labels(self):
+        oc = OC(
+            cycle=np.arange(10).tolist(),
+            oc=np.sin(np.arange(10)).tolist(),
+            minimum_time_error=[0.1] * 10,
+            minimum_time=np.arange(10).tolist(),
+            weights=[1.0] * 10,
+            labels=["A"] * 5 + ["B"] * 5,
+        )
+        ax = Plot.plot_data(oc)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_data_no_labels(self):
+        oc = OC(
+            cycle=np.arange(10).tolist(),
+            oc=np.sin(np.arange(10)).tolist(),
+            minimum_time_error=[0.1] * 10,
+            minimum_time=np.arange(10).tolist(),
+            weights=[1.0] * 10,
+        )
+        ax = Plot.plot_data(oc)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_data_no_error(self):
+        oc = OC(
+            cycle=np.arange(10).tolist(),
+            oc=np.sin(np.arange(10)).tolist(),
+            minimum_time=np.arange(10).tolist(),
+            weights=[1.0] * 10,
+        )
+        ax = Plot.plot_data(oc)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_data_with_existing_ax(self):
+        fig, ax = plt.subplots()
+        oc = OC(
+            cycle=np.arange(10).tolist(),
+            oc=np.sin(np.arange(10)).tolist(),
+            minimum_time=np.arange(10).tolist(),
+            weights=[1.0] * 10,
+        )
+        result = Plot.plot_data(oc, ax=ax)
+        self.assertIs(result, ax)
+
+    def test_plot_data_with_nan_labels(self):
+        labels = ["A"] * 5 + [None] * 5
+        oc = OC(
+            cycle=np.arange(10).tolist(),
+            oc=np.sin(np.arange(10)).tolist(),
+            minimum_time_error=[0.1] * 10,
+            minimum_time=np.arange(10).tolist(),
+            weights=[1.0] * 10,
+            labels=labels,
+        )
+        ax = Plot.plot_data(oc)
+        self.assertIsInstance(ax, plt.Axes)
+
+
+class TestPlotModelLmfit(unittest.TestCase):
+    def tearDown(self):
+        plt.close("all")
+
     def setUp(self):
-        self.cycle = np.arange(10)
-        self.oc_vals = np.sin(self.cycle)
-        self.oc_err = np.ones(10) * 0.1
-        self.labels = ["A"] * 5 + ["B"] * 5
-        
-        self.data_dict = {
-            "cycle": self.cycle,
-            "oc": self.oc_vals,
-            "minimum_time_error": self.oc_err,
-            "labels": self.labels,
-            "minimum_time": self.cycle,
-            "weights": np.ones(10),
-            "minimum_type": ["p"] * 10
-        }
-        self.oc_obj = OC(**self.data_dict)
+        n = 50
+        cycle = np.linspace(-100, 100, n)
+        oc = 2.0 * cycle + 5.0 + np.random.normal(0, 0.1, n)
+        self.data = OCLMFit(
+            oc=oc.tolist(), cycle=cycle.tolist(),
+            minimum_time=cycle.tolist(),
+            minimum_time_error=[0.1] * n,
+            weights=np.ones(n).tolist(),
+        )
+        self.result = self.data.fit_linear(a=1.5, b=3.0)
 
-    @patch("matplotlib.pyplot.subplots")
-    def test_plot_data_basic(self, mock_subplots):
-        mock_fig = MagicMock()
-        mock_ax = MagicMock()
-        mock_subplots.return_value = (mock_fig, mock_ax)
-        
-        ax = Plot.plot_data(self.oc_obj)
-        
-        self.assertEqual(ax, mock_ax)
-        mock_ax.errorbar.assert_called()
-        mock_ax.set_ylabel.assert_called_with("O−C")
-        mock_ax.set_xlabel.assert_called_with("Cycle")
+    def test_plot_model_lmfit(self):
+        ax = Plot.plot_model_lmfit(self.result, self.data)
+        self.assertIsInstance(ax, plt.Axes)
 
-    @patch("matplotlib.pyplot.subplots")
-    def test_plot_data_with_labels(self, mock_subplots):
-        mock_fig = MagicMock()
-        mock_ax = MagicMock()
-        mock_subplots.return_value = (mock_fig, mock_ax)
-        
-        Plot.plot_data(self.oc_obj)
-        
-        self.assertTrue(mock_ax.errorbar.call_count >= 2)
-        mock_ax.legend.assert_called()
+    def test_plot_model_lmfit_with_ax(self):
+        fig, ax = plt.subplots()
+        result = Plot.plot_model_lmfit(self.result, self.data, ax=ax)
+        self.assertIs(result, ax)
 
-    @patch("matplotlib.pyplot.subplots")
-    def test_plot_wrapper(self, mock_subplots):
-        mock_fig = MagicMock()
-        mock_ax = MagicMock()
-        mock_subplots.return_value = (mock_fig, mock_ax)
-        
-        Plot.plot(self.oc_obj, res=False)
-        
-        mock_ax.errorbar.assert_called()
 
-    @patch("matplotlib.pyplot.subplots")
-    def test_plot_residuals(self, mock_subplots):
-        mock_fig = MagicMock()
-        mock_main_ax = MagicMock()
-        mock_resid_ax = MagicMock()
-        
-        mock_subplots.return_value = (mock_fig, (mock_main_ax, mock_resid_ax))
-        
-        mock_subplots.return_value = (mock_fig, mock_main_ax)
-        Plot.plot(self.oc_obj, res=True)
-        mock_main_ax.errorbar.assert_called()
+class TestPlotModelComponents(unittest.TestCase):
+    def tearDown(self):
+        plt.close("all")
 
-    @patch("matplotlib.pyplot.subplots")
-    @patch("ocpy.visualization.Plot.plot_model_components")
-    def test_plot_with_model(self, mock_plot_comps, mock_subplots):
-        mock_fig = MagicMock()
-        mock_main_ax = MagicMock()
-        mock_resid_ax = MagicMock()
-        mock_subplots.return_value = (mock_fig, (mock_main_ax, mock_resid_ax))
-        
-        model = [] 
-        
-        Plot.plot(self.oc_obj, model=model, res=True)
-        
-        mock_plot_comps.assert_called()
-        self.assertTrue(mock_main_ax.errorbar.call_count > 0)
-        mock_resid_ax.set_ylabel.assert_called_with("Resid")
+    def test_plot_single_component(self):
+        lin = Linear(a=Parameter(value=2.0), b=Parameter(value=1.0))
+        xline = np.linspace(-10, 10, 100)
+        ax = Plot.plot_model_components([lin], xline)
+        self.assertIsInstance(ax, plt.Axes)
 
-    @patch("arviz.extract")
-    @patch("corner.corner")
-    def test_plot_corner(self, mock_corner, mock_az_extract):
-        mock_idata = MagicMock()
-        
-        mock_var = MagicMock()
-        mock_var.values = np.random.rand(100, 4) 
-        mock_var.ndim = 2
-        
-        mock_idata.posterior.data_vars = {"a": mock_var}
-        mock_idata.posterior.__getitem__.return_value = mock_var
-        
-        mock_az_extract.return_value = {"a": mock_var}
+    def test_plot_multiple_components(self):
+        lin = Linear(a=Parameter(value=1.0), b=Parameter(value=0.0))
+        quad = Quadratic(q=Parameter(value=0.01))
+        xline = np.linspace(-10, 10, 100)
+        ax = Plot.plot_model_components([lin, quad], xline)
+        self.assertIsInstance(ax, plt.Axes)
 
-        from ocpy.visualization import Plot
-        Plot.plot_corner(mock_idata, cornerstyle="corner")
-        
-        mock_corner.assert_called()
+    def test_plot_with_uncertainty_band(self):
+        lin = Linear(a=Parameter(value=1.0), b=Parameter(value=0.0))
+        xline = np.linspace(-10, 10, 100)
+        y = lin.model_func(xline, 1.0, 0.0)
+        band = (xline, y - 0.5, y + 0.5)
+        ax = Plot.plot_model_components([lin], xline, uncertainty_band=band)
+        self.assertIsInstance(ax, plt.Axes)
 
-    @patch("arviz.plot_trace")
-    def test_plot_trace(self, mock_az_plot_trace):
-        mock_idata = MagicMock()
-        
-        mock_var = MagicMock()
-        mock_var.values = np.random.rand(100, 4)
-        
-        mock_idata.posterior.data_vars = {"a": mock_var}
-        mock_idata.posterior.__getitem__.return_value = mock_var
-        
-        mock_axes = np.array([MagicMock()])
-        mock_az_plot_trace.return_value = mock_axes
-        
-        from ocpy.visualization import Plot
-        Plot.plot_trace(mock_idata)
-        
-        mock_az_plot_trace.assert_called()
+    def test_plot_empty_components(self):
+        xline = np.linspace(-10, 10, 100)
+        ax = Plot.plot_model_components([], xline)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_with_existing_ax(self):
+        fig, ax = plt.subplots()
+        lin = Linear(a=Parameter(value=1.0), b=Parameter(value=0.0))
+        xline = np.linspace(-10, 10, 100)
+        result = Plot.plot_model_components([lin], xline, ax=ax)
+        self.assertIs(result, ax)
+
+
+class TestPlotWrapper(unittest.TestCase):
+    def tearDown(self):
+        plt.close("all")
+
+    def setUp(self):
+        n = 50
+        self.cycle = np.linspace(-100, 100, n)
+        oc = 2.0 * self.cycle + 5.0 + np.random.normal(0, 0.1, n)
+        self.data = OCLMFit(
+            oc=oc.tolist(), cycle=self.cycle.tolist(),
+            minimum_time=self.cycle.tolist(),
+            minimum_time_error=[0.1] * n,
+            weights=np.ones(n).tolist(),
+            labels=["CCD"] * n,
+        )
+
+    def test_plot_no_model(self):
+        ax = Plot.plot(self.data, res=False)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_with_lmfit_model(self):
+        result = self.data.fit_linear(a=1.5, b=3.0)
+        ax = Plot.plot(self.data, model=result, res=True)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_with_component_list(self):
+        lin = Linear(a=Parameter(value=2.0), b=Parameter(value=5.0))
+        ax = Plot.plot(self.data, model=[lin], res=True)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_with_single_component(self):
+        lin = Linear(a=Parameter(value=2.0), b=Parameter(value=5.0))
+        ax = Plot.plot(self.data, model=lin, res=True)
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_with_title(self):
+        ax = Plot.plot(self.data, res=False, title="Test Plot")
+        self.assertIsInstance(ax, plt.Axes)
+
+    def test_plot_with_existing_ax_no_res(self):
+        fig, ax = plt.subplots()
+        result = Plot.plot(self.data, ax=ax, res=True)
+        self.assertIsInstance(result, plt.Axes)
+
+
+class TestPlotModelPyMC(unittest.TestCase):
+    def tearDown(self):
+        plt.close("all")
+
+    def setUp(self):
+        n = 20
+        self.cycle = np.linspace(0, 100, n)
+        oc = 0.5 * self.cycle + 10 + np.random.normal(0, 0.1, n)
+        self.data = OCPyMC(
+            cycle=self.cycle,
+            oc=oc,
+            minimum_time=self.cycle,
+            minimum_time_error=np.ones(n) * 0.1,
+            weights=np.ones(n),
+        )
+        self.idata = self.data.fit_linear(
+            a=Parameter(value=0.5, min=0.4, max=0.6),
+            b=Parameter(value=10, min=9, max=11),
+            draws=10, tune=5, chains=1, progressbar=False, random_seed=42,
+        )
+
+    def test_plot_model_pymc(self):
+        fig, ax = plt.subplots()
+        result = Plot.plot_model_pymc(self.idata, self.data, ax=ax)
+        self.assertIsInstance(result, plt.Axes)
+
+    def test_plot_with_pymc_model(self):
+        ax = Plot.plot(self.data, model=self.idata, res=True)
+        self.assertIsInstance(ax, plt.Axes)
+
+
+class TestFormatLabel(unittest.TestCase):
+    def test_known_param(self):
+        result = Plot._format_label("linear_omega")
+        self.assertIn("omega", result)
+
+    def test_with_index(self):
+        result = Plot._format_label("keplerian1_amp")
+        self.assertIn("1", result)
+
+    def test_unknown_param(self):
+        result = Plot._format_label("unknown_xyz")
+        self.assertEqual(result, "unknown_xyz")
+
+    def test_with_unit(self):
+        result = Plot._format_label("linear_a", unit="d/cycle")
+        self.assertIn("d/cycle", result)
+
+    def test_direct_mapping(self):
+        result = Plot._format_label("omega")
+        self.assertIn("omega", result)
+
+    def test_no_underscore(self):
+        result = Plot._format_label("something")
+        self.assertEqual(result, "something")

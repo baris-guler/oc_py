@@ -47,9 +47,6 @@ class ModelComponent(ModelComponentModel):
         return self.model_func
 
     def update_parameters(self, params_dict: Dict[str, float]):
-        """
-        Update the parameter values of the component from a dictionary.
-        """
         for k, v in params_dict.items():
             if k in self.params:
                 self.params[k].value = float(v)
@@ -58,7 +55,6 @@ class ModelComponent(ModelComponentModel):
     def update_from_idata(self, inference_data, group="posterior", stat="median"):
         prefix = getattr(self, "name", "")
         
-        # Get the variables for this component
         variable_names = [var_name for var_name in inference_data[group].data_vars if var_name.startswith(f"{prefix}_")]
         
         params_to_update = {}
@@ -70,7 +66,6 @@ class ModelComponent(ModelComponentModel):
                 elif stat == "mean":
                     value = inference_data[group][variable_name].mean(dim=("chain", "draw")).item()
                 else:
-                    # Fallback to first sample
                     value = inference_data[group][variable_name].values[0, 0]
                 params_to_update[parameter_name] = float(value)
         
@@ -179,58 +174,7 @@ class Keplerian(ModelComponent):
         
         return amp_term * (term1 + term2)
 
-class KeplerianOld(ModelComponent):
-    name = "keplerian"
-
-    def __init__(
-        self,
-        *,
-        amp:   NumberOrParam = None,
-        e:     NumberOrParam = 0.0,
-        omega: NumberOrParam = 0.0,
-        P:     NumberOrParam = None,
-        T0:    NumberOrParam = None,
-        name:  Optional[str] = None,
-    ) -> None:
-        if name is not None:
-            self.name = name
-        self.params = {
-            "amp":   self._param(amp),
-            "e":     self._param(e),
-            "omega": self._param(omega),
-            "P":     self._param(P),
-            "T0":    self._param(T0),
-        }
-
-    def _wrap_to_pi(self, M):
-        m = self.math_class
-        return self._atan2(m.sin(M), m.cos(M))
-    
-    def _kepler_solve(self, M, e, n_iter: int = 8):
-        m = self.math_class
-        M = self._wrap_to_pi(M)
-        e = m.clip(e, 0.0, 1.0 - 1e-12)
-        E = M + e * m.sin(M)
-        for _ in range(n_iter):
-            f  = E - e * m.sin(E) - M
-            fp = 1.0 - e * m.cos(E)
-            E  = E - f / fp
-        return E
-    
-    def model_func(self, x, amp, e, omega, P, T0):
-        m = self.math_class
-        wr = omega * (np.pi / 180.0)
-        M  = 2.0 * np.pi * (x - T0) / P
-        E  = self._kepler_solve(M, e)
-
-        cosE = m.cos(E)
-        sinE = m.sin(E)
-        sqrt1me2 = m.sqrt(m.maximum(0.0, 1.0 - e * e))
-
-        return amp * (
-            (cosE - e) * m.sin(wr) +
-            sqrt1me2 * sinE * m.cos(wr)
-        )
+KeplerianOld = Keplerian
 
 
 
@@ -429,9 +373,6 @@ class OC(OCModel):
             bin_error_method = error_binner
 
         if bin_style is None:
-            # The _equal_bins now returns edges, not bins (start, end pairs).
-            # The binning logic below expects bins (start, end pairs).
-            # I will convert edges to bins for compatibility with the existing loop.
             edges = self._equal_bins(self.data, xcol, int(bin_count))
             bins = np.column_stack([edges[:-1], edges[1:]])
         else:
@@ -482,7 +423,8 @@ class OC(OCModel):
 
     def merge(self, oc: Self) -> Self:
         new_oc = deepcopy(self)
-        new_oc.data = pd.concat([self.data, oc.data], ignore_index=True, sort=False)
+        dfs = [df.dropna(axis=1, how="all") for df in [self.data, oc.data]]
+        new_oc.data = pd.concat(dfs, ignore_index=True, sort=False)
         return new_oc
     
     def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit") -> Self:

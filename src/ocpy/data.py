@@ -33,7 +33,6 @@ class Data(DataModel):
         fixed_minimum_type = Fixer.length_fixer(minimum_type, minimum_time)
         fixed_labels_to = Fixer.length_fixer(labels, minimum_time)
 
-        # Convert to list if it's a scalar/None to avoid pandas scalar error
         minimum_time_sequence = minimum_time if hasattr(minimum_time, "__len__") else [minimum_time]
 
         self.data = pd.DataFrame(
@@ -109,10 +108,6 @@ class Data(DataModel):
         return cls(**kwargs)
 
     def _assign_or_fill(self, df: pd.DataFrame, col: str, values, override: bool) -> None:
-        """
-        If override=True or column doesn't exist, assign values directly.
-        Otherwise, fill only where existing entries are NaN.
-        """
         if override or col not in df.columns:
             df[col] = values
         else:
@@ -155,149 +150,6 @@ class Data(DataModel):
         weights = method(minimum_time_error)
         self._assign_or_fill(new_data.data, "weights", weights, override)
         return new_data
-    
-    """
-    @staticmethod
-    def _equal_bins(data_dataframe: pd.DataFrame, bin_count: int) -> np.ndarray:
-        ecorr_vals = data_dataframe["ecorr"].to_numpy(dtype=float)
-        ecorr_min = float(np.min(ecorr_vals))
-        ecorr_max = float(np.max(ecorr_vals))
-
-        bins = np.empty((0, 2), dtype=float)
-        total_span = ecorr_max - ecorr_min
-        bin_length = total_span / max(1, int(bin_count))
-
-        for k in range(int(bin_count)):
-            start = ecorr_min + k * bin_length
-            end = ecorr_min + (k + 1) * bin_length if k < bin_count - 1 else ecorr_max
-            bins = np.vstack([bins, np.array([[start, end]], dtype=float)])
-
-        return bins
-
-    @staticmethod
-    def _smart_bins(data_dataframe: pd.DataFrame, bin_count: int, smart_bin_period: float = 50) -> np.ndarray:
-        if smart_bin_period is None or smart_bin_period <= 0:
-            raise ValueError("smart_bin_period must be a positive number for _smart_bins")
-
-        df_sorted = data_dataframe.sort_values(by="ecorr")
-        ecorr_vals = df_sorted["ecorr"].to_numpy(dtype=float)
-        ecorr_min = float(np.min(ecorr_vals))
-        ecorr_max = float(np.max(ecorr_vals))
-
-        bins = np.empty((0, 2), dtype=float)
-        bin_start = ecorr_min
-
-        gaps = np.diff(ecorr_vals)
-        big_gaps = gaps > smart_bin_period
-        gap_indexes = np.where(big_gaps)[0]
-
-        for i in gap_indexes:
-            bins = np.vstack([bins, np.array([[bin_start, float(ecorr_vals[i])]], dtype=float)])
-            bin_start = float(ecorr_vals[i + 1])
-
-        bins = np.vstack([bins, np.array([[bin_start, ecorr_max]], dtype=float)])
-
-        target_bin_count = int(max(1, bin_count))
-
-        if len(bins) > target_bin_count:
-            while len(bins) > target_bin_count:
-                inter_gaps = bins[1:, 0] - bins[:-1, 1]
-                merge_pos = int(np.argmin(inter_gaps))
-                merged_segment = np.array([[bins[merge_pos, 0], bins[merge_pos + 1, 1]]], dtype=float)
-                bins = np.vstack([bins[:merge_pos], merged_segment, bins[merge_pos + 2:]])
-
-        if int(bin_count) > len(bins):
-            lacking_bins = int(bin_count - len(bins))
-            lens = (bins[:, 1] - bins[:, 0]).astype(float)
-            weights = lens / np.sum(lens) * lacking_bins
-            add_counts = weights.astype(int)
-            remainder = lacking_bins - int(np.sum(add_counts))
-
-            if remainder > 0:
-                rema = weights % 1.0
-                top = np.argsort(-rema)[:remainder]
-                add_counts[top] += 1
-
-            new_bins = np.empty((0, 2), dtype=float)
-
-            for i, (start, end) in enumerate(bins):
-                k = int(add_counts[i])
-
-                if k <= 0:
-                    new_bins = np.vstack([new_bins, np.array([[start, end]], dtype=float)])
-                else:
-                    edges = np.linspace(start, end, k + 2)
-                    segs = np.column_stack([edges[:-1], edges[1:]])
-                    new_bins = np.vstack([new_bins, segs])
-
-            bins = new_bins
-
-        return bins
-
-    def bin(self,
-            bin_count: int = 1,
-            bin_method: Optional[ArrayReducer] = None,
-            bin_error_method: Optional[ArrayReducer] = None,
-            bin_style: Optional[Callable[[pd.DataFrame, int], np.ndarray]] = None) -> Self:
-
-        def mean_binner(array: NDArray, weights: NDArray) -> float:
-            return float(np.average(array, weights=weights))
-
-        def error_binner(weights: NDArray) -> float:
-            return float(1.0 / np.sqrt(np.sum(weights)))
-
-        if self.data["weights"].hasnans:
-            raise ValueError("`weights` contain NaN values")
-
-        if self.data["ecorr"].hasnans:
-            raise ValueError("`ecorr` contain Nan values")
-
-        new_data = deepcopy(self)
-
-        if bin_method is None:
-            bin_method = mean_binner
-
-        if bin_error_method is None:
-            bin_error_method = error_binner
-
-        if (bin_style is None):
-            bins = self._equal_bins(new_data.data, int(bin_count))
-        else:
-            bins = bin_style(new_data.data, int(bin_count))
-
-        binned_ecorrs: list[float] = []
-        binned_ocs: list[float] = []
-        binned_errors: list[float] = []
-
-        n_bins = len(bins)
-
-        for i, (start, end) in enumerate(bins):
-            if i < n_bins - 1:
-                mask = (new_data.data["ecorr"] >= start) & (new_data.data["ecorr"] < end)
-            else:
-                mask = (new_data.data["ecorr"] >= start) & (new_data.data["ecorr"] <= end)
-
-            if not np.any(mask):
-                continue
-
-            weights = new_data.data["weights"][mask]
-            binned_ecorrs.append(bin_method(new_data.data["ecorr"][mask], weights))
-            binned_ocs.append(bin_method(new_data.data["oc"][mask], weights))
-            binned_errors.append(bin_error_method(weights))
-
-        new_data_df = pd.DataFrame()
-        new_data_df["minimum_time"] = np.nan
-        new_data_df["minimum_time_error"] = binned_errors
-        new_data_df["weights"] = np.nan
-        new_data_df["minimum_type"] = None
-        new_data_df["labels"] = "Binned"
-        new_data_df["ecorr"] = binned_ecorrs
-        new_data_df["oc"] = binned_ocs
-
-        new_data.data = new_data_df
-
-        return new_data
-    """
 
     def calculate_oc(self, reference_minimum: float, reference_period: float, model_type: str = "lmfit") -> OC:
         df = self.data.copy()

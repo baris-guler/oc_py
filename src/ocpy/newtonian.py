@@ -1,6 +1,8 @@
 import numpy as np
 import rebound
 from typing import Optional, Dict, List, Any, Union
+from astropy import constants as const
+from astropy import units as u
 from ocpy.oc import ModelComponent, Parameter
 from ocpy.custom_types import NumberOrParam
 
@@ -12,23 +14,24 @@ except ImportError:
     HAS_PYTENSOR = False
 
 
-_C_LIGHT: Dict[str, float] = {
-    "day": 173.1446,
-    "d":   173.1446,
-    "yr":  63241.077,
-    "year": 63241.077,
-    "s":   0.00200398,
-    "sec": 0.00200398,
+_TIME_UNIT_MAP: Dict[str, u.Unit] = {
+    "day": u.day,
+    "d":   u.day,
+    "yr":  u.yr,
+    "year": u.yr,
+    "s":   u.s,
+    "sec": u.s,
 }
 
 def _c_for_time_unit(time_unit: str) -> float:
     key = time_unit.strip().lower()
-    if key not in _C_LIGHT:
+    if key not in _TIME_UNIT_MAP:
         raise ValueError(
-            f"Bilinmeyen zaman birimi: '{time_unit}'. "
-            f"Geçerli değerler: {list(_C_LIGHT.keys())}"
+            f"Unknown time unit: '{time_unit}'. "
+            f"Valid values: {list(_TIME_UNIT_MAP.keys())}"
         )
-    return _C_LIGHT[key]
+    c_au_per_unit = const.c.to(u.au / _TIME_UNIT_MAP[key])
+    return c_au_per_unit.value
 
 
 class NewtonianModel(ModelComponent):
@@ -185,7 +188,7 @@ class NewtonianModel(ModelComponent):
 
             if "a" in orb_params and "P" in orb_params:
                 raise ValueError(
-                    f"Body {i + 1}: 'a' ve 'P' aynı anda verilemez."
+                    f"Body {i + 1}: 'a' and 'P' cannot be specified simultaneously."
                 )
 
             if self.orbit_type == "jacobi":
