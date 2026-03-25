@@ -146,33 +146,36 @@ class Keplerian(ModelComponent):
             "T0":    self._param(T0),
         }
 
-    def _kepler_solve(self, M, e, n_iter: int = 5):
+    def _kepler_solve(self, M, e, n_iter: int = 8):
         m = self.math_class
-        E = M 
+        M_red = M - 2.0 * np.pi * m.floor(M / (2.0 * np.pi) + 0.5)
+        E = M_red
         for _ in range(n_iter):
-            f_val = E - e * m.sin(E) - M
-            f_der = 1.0 - e * m.cos(E)
+            sin_E = m.sin(E)
+            cos_E = m.cos(E)
+            f_val = E - e * sin_E - M_red
+            f_der = 1.0 - e * cos_E
             E = E - f_val / f_der
         return E
 
     def model_func(self, x, amp, e, omega, P, T0):
         m = self.math_class
-        
+
         w_rad = omega * (np.pi / 180.0)
         M = 2.0 * np.pi * (x - T0) / P
         E = self._kepler_solve(M, e)
-        
-        sqrt_term = m.sqrt((1.0 + e) / (1.0 - e))
-        tan_half_E = m.tan(E / 2.0)
-        true_anom = 2.0 * m.arctan(sqrt_term * tan_half_E)
-        
-        denom_factor = m.sqrt(1.0 - (e**2) * (m.cos(w_rad))**2)
-        amp_term = amp / denom_factor
-        
-        term1 = ((1.0 - e**2) / (1.0 + e * m.cos(true_anom))) * m.sin(true_anom + w_rad)
-        term2 = e * m.sin(w_rad)
-        
-        return amp_term * (term1 + term2)
+
+        sin_E = m.sin(E)
+        cos_E = m.cos(E)
+        sin_w = m.sin(w_rad)
+        cos_w = m.cos(w_rad)
+        e2 = e ** 2
+
+        bracket = m.sqrt(1.0 - e2) * sin_E * cos_w + cos_E * sin_w
+
+        K = amp / m.sqrt(1.0 - e2 * cos_w ** 2)
+
+        return K * bracket
 
 KeplerianOld = Keplerian
 

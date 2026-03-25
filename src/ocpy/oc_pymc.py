@@ -121,7 +121,6 @@ class OCPyMC(OC):
             if return_model:
                 return model
 
-            # Pack sample arguments
             sample_kwargs = kwargs.copy()
 
             if cores is not None:
@@ -153,19 +152,37 @@ class OCPyMC(OC):
 
         return inference_data
 
-    def clean(
-        self, 
-        inference_data: az.InferenceData, 
-        drop_chains: int = 0, 
-        filter_outliers: bool = True, 
-        iqr_multiplier: float = 4.0
+    def remove_bad_samples(
+        self,
+        inference_data: az.InferenceData,
+        remove_divergent: bool = True,
+        remove_max_treedepth: bool = False,
+        drop_chains: int = 0,
+        filter_outliers: bool = False,
+        iqr_multiplier: float = 4.0,
+        check_ess: bool = True,
+        min_ess: int = 400,
+        check_rhat: bool = True,
+        max_rhat: float = 1.01,
+        verbose: bool = True
     ) -> az.InferenceData:
         posterior_data = inference_data.posterior
         chain_coords = posterior_data.coords["chain"].values
         chains_to_keep = list(chain_coords)
-        
+
+        var_names = [var_name for var_name in posterior_data.data_vars
+                     if getattr(posterior_data[var_name], "ndim", 0) == 2
+                     and var_name not in {"y_model", "y_model_dense", "y_obs", "dense_x"}]
+
+        total_samples_before = posterior_data.dims["chain"] * posterior_data.dims["draw"]
+        if verbose:
+            print("="*70)
+            print("MCMC SAMPLE CLEANING REPORT")
+            print("="*70)
+            print(f"Total samples before: {total_samples_before} ({posterior_data.dims['chain']} chains × {posterior_data.dims['draw']} draws)")
+            print()
+
         if drop_chains > 0:
-            var_names = [var_name for var_name in posterior_data.data_vars if getattr(posterior_data[var_name], "ndim", 0) == 2 and var_name not in {"y_model", "y_model_dense", "y_obs", "dense_x"}]
             if drop_chains >= len(chain_coords):
                 raise ValueError("drop_chains must be less than the total number of chains.")
 
@@ -179,30 +196,89 @@ class OCPyMC(OC):
                     if std > 1e-10:
                          distance += abs(chain_median - overall_median) / std
                 chain_distances.append((chain, distance))
-            
+
             chain_distances.sort(key=lambda x: x[1], reverse=True)
             chains_to_drop = [chain for chain, dist_val in chain_distances[:drop_chains]]
             chains_to_keep = [chain for chain in chain_coords if chain not in chains_to_drop]
             posterior_sub = posterior_data.sel(chain=chains_to_keep)
+
+            if verbose:
+                print(f"[CHAIN FILTERING]")
+                print(f"  Dropped {drop_chains} chain(s): {chains_to_drop}")
+                print(f"  Remaining chains: {len(chains_to_keep)}")
+                print()
         else:
             posterior_sub = posterior_data
-            
+
         mask = None
+        n_divergent = 0
+        n_max_treedepth = 0
+
+        if remove_divergent or remove_max_treedepth:
+            if "sample_stats" not in inference_data._groups:
+                warnings.warn("sample_stats not found in InferenceData. Cannot filter by PyMC diagnostics.")
+            else:
+                sample_stats = inference_data.sample_stats
+                if drop_chains > 0:
+                    sample_stats = sample_stats.sel(chain=chains_to_keep)
+
+                stacked_stats = sample_stats.stack(sample=("chain", "draw"))
+                mask = np.ones(stacked_stats.sizes["sample"], dtype=bool)
+
+                if remove_divergent and "diverging" in sample_stats:
+                    divergent = stacked_stats.diverging.values
+                    n_divergent = int(divergent.sum())
+                    mask = mask & ~divergent
+
+                    if verbose:
+                        print(f"[DIVERGENT SAMPLES]")
+                        print(f"  Removed: {n_divergent} ({100*n_divergent/len(mask):.2f}%)")
+                        print(f"  Reason: HMC sampler failed in these regions (see Betancourt 2017)")
+                        print()
+
+                if remove_max_treedepth and "tree_depth" in sample_stats and "max_tree_depth" in sample_stats.attrs:
+                    max_td = sample_stats.attrs.get("max_tree_depth", 10)
+                    tree_depth = stacked_stats.tree_depth.values
+                    max_td_exceeded = tree_depth >= max_td
+                    n_max_treedepth = int(max_td_exceeded.sum())
+                    mask = mask & ~max_td_exceeded
+
+                    if verbose:
+                        print(f"[MAX TREE DEPTH]")
+                        print(f"  Removed: {n_max_treedepth} ({100*n_max_treedepth/len(mask):.2f}%)")
+                        print()
+
+        n_outliers = 0
         if filter_outliers:
-            var_names = [var_name for var_name in posterior_sub.data_vars if getattr(posterior_sub[var_name], "ndim", 0) == 2 and var_name not in {"y_model", "y_model_dense", "y_obs", "dense_x"}]
+            if verbose:
+                print(f"[STATISTICAL OUTLIER FILTERING]")
+                print(f"  ⚠️  WARNING: IQR-based filtering can remove valid samples from non-Gaussian posteriors!")
+                print(f"  Using IQR multiplier: {iqr_multiplier}")
+                print()
+
             stacked = posterior_sub.stack(sample=("chain", "draw"))
-            mask = np.ones(stacked.sizes["sample"], dtype=bool)
-            
+            if mask is None:
+                mask = np.ones(stacked.sizes["sample"], dtype=bool)
+
+            mask_before_outliers = mask.copy()
+
             for var_name in var_names:
-                values_array = stacked[var_name].values
+                values_array = stacked[var_name].values[mask_before_outliers]
                 quartile_1 = np.percentile(values_array, 25)
                 quartile_3 = np.percentile(values_array, 75)
                 interquartile_range = quartile_3 - quartile_1
                 if interquartile_range > 1e-10:
                     lower_bound = quartile_1 - iqr_multiplier * interquartile_range
                     upper_bound = quartile_3 + iqr_multiplier * interquartile_range
-                    mask = mask & (values_array >= lower_bound) & (values_array <= upper_bound)
-                    
+                    all_values = stacked[var_name].values
+                    outlier_mask = (all_values >= lower_bound) & (all_values <= upper_bound)
+                    mask = mask & outlier_mask
+
+            n_outliers = int(mask_before_outliers.sum() - mask.sum())
+            if verbose:
+                print(f"  Removed {n_outliers} additional outlier samples")
+                print()
+
         new_groups = {}
         for group_name in inference_data._groups:
             group_dataset = getattr(inference_data, group_name)
@@ -212,29 +288,84 @@ class OCPyMC(OC):
                         group_dataset = group_dataset.sel(chain=chains_to_keep)
                     except KeyError:
                         pass
-                
-                if filter_outliers and mask is not None:
+
+                if mask is not None:
                     try:
                         stacked = group_dataset.stack(sample=("chain", "draw"))
                         filtered = stacked.isel(sample=mask)
                         n_draws = filtered.sizes["sample"]
-                        
-                        # Prepare the dataset for dimensionality reshaping cleanly
+
                         filtered = filtered.drop_vars(["chain", "draw", "sample"], errors="ignore")
                         filtered = filtered.rename({"sample": "draw"})
                         filtered = filtered.assign_coords({"draw": np.arange(n_draws)})
-                        
-                        # Re-add chain dimension
+
                         group_dataset = filtered.expand_dims({"chain": [0]}).transpose("chain", "draw", ...)
                     except Exception as error_msg:
                         warnings.warn(f"clean() encountered an issue on {group_name}: {error_msg}")
-                        
+
             new_groups[group_name] = group_dataset
-            
+
         cleaned = az.InferenceData(**new_groups)
         for attr_key in ("_model_components", "_model_prefixes"):
             if attr_key in getattr(inference_data, "attrs", {}):
                 cleaned.attrs[attr_key] = inference_data.attrs[attr_key]
+
+        total_samples_after = cleaned.posterior.dims["chain"] * cleaned.posterior.dims["draw"]
+        n_removed_total = total_samples_before - total_samples_after
+
+        if verbose:
+            print("-"*70)
+            print(f"Total samples removed: {n_removed_total} ({100*n_removed_total/total_samples_before:.2f}%)")
+            print(f"Total samples after: {total_samples_after}")
+            print()
+
+        if check_ess:
+            ess = az.ess(cleaned, var_names=var_names)
+            min_ess_value = float(min([ess[var].min().values for var in var_names]))
+
+            if verbose:
+                print(f"[EFFECTIVE SAMPLE SIZE CHECK]")
+                print(f"  Minimum ESS across all parameters: {min_ess_value:.0f}")
+
+            if min_ess_value < min_ess:
+                msg = f"ESS ({min_ess_value:.0f}) is below recommended minimum ({min_ess}). Results may be unreliable."
+                if verbose:
+                    print(f"  ⚠️  WARNING: {msg}")
+                warnings.warn(msg)
+            elif verbose:
+                print(f"  ✓ ESS is sufficient (>= {min_ess})")
+
+            if verbose:
+                print()
+
+        if check_rhat and len(cleaned.posterior.coords["chain"]) > 1:
+            rhat = az.rhat(cleaned, var_names=var_names)
+            max_rhat_value = float(max([rhat[var].max().values for var in var_names]))
+
+            if verbose:
+                print(f"[R-HAT CONVERGENCE CHECK]")
+                print(f"  Maximum R-hat across all parameters: {max_rhat_value:.4f}")
+
+            if max_rhat_value > max_rhat:
+                msg = f"R-hat ({max_rhat_value:.4f}) exceeds recommended maximum ({max_rhat}). Chains may not have converged."
+                if verbose:
+                    print(f"  ⚠️  WARNING: {msg}")
+                warnings.warn(msg)
+            elif verbose:
+                print(f"  ✓ R-hat is acceptable (<= {max_rhat})")
+
+            if verbose:
+                print()
+        elif check_rhat and verbose:
+            print(f"[R-HAT CONVERGENCE CHECK]")
+            print(f"  ⚠️  Cannot compute R-hat with only 1 chain after filtering")
+            print()
+
+        if verbose:
+            print("="*70)
+            print("Cleaning complete!")
+            print("="*70)
+
         return cleaned
 
 

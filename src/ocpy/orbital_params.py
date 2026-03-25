@@ -552,8 +552,12 @@ def compute_orbital_params_from_fit(
 
 def _kepler_solve_numpy(M: np.ndarray, e, n_iter: int = 10) -> np.ndarray:
     E = M.copy() if isinstance(M, np.ndarray) else np.array(M, dtype=float)
+    E -= 2.0 * np.pi * np.round(E / (2.0 * np.pi))
+    M_red = E.copy()
     for _ in range(n_iter):
-        E = E - (E - e * np.sin(E) - M) / (1.0 - e * np.cos(E))
+        sin_E = np.sin(E)
+        cos_E = np.cos(E)
+        E = E - (E - e * sin_E - M_red) / (1.0 - e * cos_E)
     return E
 
 
@@ -580,16 +584,16 @@ def forward_model(
     M = 2.0 * np.pi * (cycles - T0) / P_cycles
     E = _kepler_solve_numpy(M, e)
 
-    sqrt_term = np.sqrt((1.0 + e) / (1.0 - e))
-    true_anom = 2.0 * np.arctan(sqrt_term * np.tan(E / 2.0))
+    sin_E = np.sin(E)
+    cos_E = np.cos(E)
+    sin_w = np.sin(w_rad)
+    cos_w = np.cos(w_rad)
+    e2 = e ** 2
 
-    denom = np.sqrt(1.0 - e**2 * np.cos(w_rad)**2)
-    amp_term = amp / denom
+    bracket = np.sqrt(1.0 - e2) * sin_E * cos_w + cos_E * sin_w
+    K = amp / np.sqrt(1.0 - e2 * cos_w ** 2)
 
-    term1 = ((1.0 - e**2) / (1.0 + e * np.cos(true_anom))) * np.sin(true_anom + w_rad)
-    term2 = e * np.sin(w_rad)
-
-    return amp_term * (term1 + term2)
+    return K * bracket
 
 
 def forward_model_from_fit(
