@@ -174,12 +174,12 @@ class OCPyMC(OC):
                      if getattr(posterior_data[var_name], "ndim", 0) == 2
                      and var_name not in {"y_model", "y_model_dense", "y_obs", "dense_x"}]
 
-        total_samples_before = posterior_data.dims["chain"] * posterior_data.dims["draw"]
+        total_samples_before = posterior_data.sizes["chain"] * posterior_data.sizes["draw"]
         if verbose:
             print("="*70)
             print("MCMC SAMPLE CLEANING REPORT")
             print("="*70)
-            print(f"Total samples before: {total_samples_before} ({posterior_data.dims['chain']} chains × {posterior_data.dims['draw']} draws)")
+            print(f"Total samples before: {total_samples_before} ({posterior_data.sizes['chain']} chains × {posterior_data.sizes['draw']} draws)")
             print()
 
         if drop_chains > 0:
@@ -310,7 +310,7 @@ class OCPyMC(OC):
             if attr_key in getattr(inference_data, "attrs", {}):
                 cleaned.attrs[attr_key] = inference_data.attrs[attr_key]
 
-        total_samples_after = cleaned.posterior.dims["chain"] * cleaned.posterior.dims["draw"]
+        total_samples_after = cleaned.posterior.sizes["chain"] * cleaned.posterior.sizes["draw"]
         n_removed_total = total_samples_before - total_samples_after
 
         if verbose:

@@ -93,7 +93,7 @@ class TestOCPyMC(unittest.TestCase):
         self.assertIn("keplerian1_amp", idata.posterior.data_vars)
 
 
-class TestOCPyMCClean(unittest.TestCase):
+class TestOCPyMCRemoveBadSamples(unittest.TestCase):
     def setUp(self):
         self.cycle = np.linspace(0, 100, 20)
         self.oc = 0.5 * self.cycle + 10 + np.random.normal(0, 0.1, 20)
@@ -116,35 +116,52 @@ class TestOCPyMCClean(unittest.TestCase):
             random_seed=42,
         )
 
-    def test_clean_returns_inference_data(self):
-        cleaned = self.oc_pymc.clean(self.idata)
+    def test_remove_bad_samples_returns_inference_data(self):
+        cleaned = self.oc_pymc.remove_bad_samples(self.idata, verbose=False)
         self.assertIsInstance(cleaned, az.InferenceData)
         self.assertTrue(hasattr(cleaned, "posterior"))
 
-    def test_clean_preserves_attrs(self):
-        cleaned = self.oc_pymc.clean(self.idata)
+    def test_remove_bad_samples_preserves_attrs(self):
+        cleaned = self.oc_pymc.remove_bad_samples(self.idata, verbose=False)
         self.assertIn("_model_components", cleaned.attrs)
         self.assertIn("_model_prefixes", cleaned.attrs)
 
-    def test_clean_filter_outliers(self):
-        cleaned = self.oc_pymc.clean(self.idata, filter_outliers=True)
+    def test_remove_bad_samples_filter_outliers(self):
+        cleaned = self.oc_pymc.remove_bad_samples(self.idata, filter_outliers=True, verbose=False)
         self.assertTrue(hasattr(cleaned, "posterior"))
 
-    def test_clean_no_filter(self):
-        cleaned = self.oc_pymc.clean(self.idata, filter_outliers=False)
+    def test_remove_bad_samples_no_divergent_filtering(self):
+        cleaned = self.oc_pymc.remove_bad_samples(self.idata, remove_divergent=False, verbose=False)
         self.assertTrue(hasattr(cleaned, "posterior"))
 
-    def test_clean_drop_chains(self):
-        cleaned = self.oc_pymc.clean(self.idata, drop_chains=1)
+    def test_remove_bad_samples_drop_chains(self):
+        cleaned = self.oc_pymc.remove_bad_samples(self.idata, drop_chains=1, verbose=False)
         n_chains = cleaned.posterior.sizes["chain"]
         self.assertEqual(n_chains, 1)
 
-    def test_clean_drop_too_many_chains_raises(self):
+    def test_remove_bad_samples_drop_too_many_chains_raises(self):
         with self.assertRaises(ValueError):
-            self.oc_pymc.clean(self.idata, drop_chains=2)
+            self.oc_pymc.remove_bad_samples(self.idata, drop_chains=2, verbose=False)
 
-    def test_clean_drop_chains_and_filter(self):
-        cleaned = self.oc_pymc.clean(self.idata, drop_chains=1, filter_outliers=True)
+    def test_remove_bad_samples_drop_chains_and_filter(self):
+        cleaned = self.oc_pymc.remove_bad_samples(
+            self.idata,
+            drop_chains=1,
+            filter_outliers=True,
+            remove_divergent=True,
+            verbose=False
+        )
+        self.assertTrue(hasattr(cleaned, "posterior"))
+
+    def test_remove_bad_samples_with_quality_checks(self):
+        cleaned = self.oc_pymc.remove_bad_samples(
+            self.idata,
+            check_ess=True,
+            min_ess=10,
+            check_rhat=True,
+            max_rhat=1.1,
+            verbose=False
+        )
         self.assertTrue(hasattr(cleaned, "posterior"))
 
 
